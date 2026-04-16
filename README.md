@@ -1,3 +1,3 @@
 # 53_itwill_contest
 
-for bigdata contest and final_project
+for Seoul-city bigdata contest and final_project
