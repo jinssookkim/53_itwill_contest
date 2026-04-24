@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>스트라바 중복 경로 지도</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family:'Segoe UI',Arial,sans-serif; overflow:hidden; }
+#map { width:100vw; height:100vh; }
+
+/* ── 검색 패널 ── */
+#search-panel {
+  position:absolute; top:15px; left:15px; z-index:1000;
+  background:white; border-radius:12px;
+  box-shadow:0 4px 20px rgba(0,0,0,.2);
+  padding:14px; width:310px; max-height:80vh;
+  display:flex; flex-direction:column;
+}
+#search-panel h2 {
+  font-size:14px; font-weight:700; color:#e74c3c;
+  margin-bottom:10px; display:flex; align-items:center; gap:6px;
+}
+#search-input {
+  width:100%; padding:8px 12px;
+  border:2px solid #e0e0e0; border-radius:8px;
+  font-size:13px; outline:none; transition:border-color .2s;
+}
+#search-input:focus { border-color:#e74c3c; }
+#result-count { font-size:11px; color:#999; margin-top:6px; margin-bottom:2px; }
+#search-results { overflow-y:auto; flex:1; max-height:280px; }
+.result-item {
+  padding:8px 10px; border-radius:7px; cursor:pointer;
+  border-bottom:1px solid #f0f0f0; transition:background .15s;
+}
+.result-item:hover, .result-item.active {
+  background:#fff0f0; border-left:3px solid #e74c3c; padding-left:7px;
+}
+.result-item .seg-name { font-size:13px; font-weight:600; color:#222;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.result-item .seg-meta { font-size:11px; color:#888; margin-top:2px; }
+
+/* ── 상세 패널 ── */
+#detail-panel {
+  position:absolute; bottom:20px; right:15px; z-index:1000;
+  background:white; border-radius:14px;
+  box-shadow:0 4px 24px rgba(0,0,0,.2);
+  padding:18px; width:300px; max-height:75vh;
+  overflow-y:auto; display:none;
+}
+#detail-panel.visible { display:block; }
+#detail-close {
+  position:absolute; top:10px; right:12px; cursor:pointer;
+  font-size:20px; color:#999; background:none; border:none; line-height:1;
+}
+#detail-close:hover { color:#333; }
+#detail-title { font-size:14px; font-weight:700; color:#e74c3c;
+  margin-bottom:3px; padding-right:22px; word-break:break-word; }
+#detail-id { font-size:11px; color:#aaa; margin-bottom:12px; }
+
+.stat-grid { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:14px; }
+.stat-box {
+  background:#f9f9f9; border-radius:10px;
+  padding:9px 10px; text-align:center;
+}
+.stat-box .val { font-size:17px; font-weight:700; color:#222; }
+.stat-box .lbl { font-size:10px; color:#888; margin-top:2px; }
+.stat-box.hl .val { color:#e74c3c; }
+
+.overlap-section { margin-top:4px; }
+.overlap-title {
+  font-size:12px; font-weight:700; color:#555;
+  margin-bottom:8px; padding-bottom:4px;
+  border-bottom:1px solid #eee;
+}
+.partner-card {
+  background:#f9f9f9; border-radius:8px;
+  padding:9px 11px; margin-bottom:7px; cursor:pointer;
+  border-left:3px solid #bbb; transition:border-color .15s, background .15s;
+}
+.partner-card:hover { background:#fff5f0; border-color:#e74c3c; }
+.partner-card .p-name { font-size:12px; font-weight:600; color:#222;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.partner-card .p-meta { font-size:11px; color:#888; margin-top:3px; }
+.bar-section { margin-top:7px; }
+.bar-row { margin-bottom:5px; }
+.bar-label-row {
+  display:flex; justify-content:space-between;
+  font-size:10px; color:#666; margin-bottom:2px;
+}
+.bar-label-row .bar-lbl { font-weight:600; }
+.bar-label-row .bar-pct { font-weight:700; }
+.bar-track {
+  height:7px; background:#e8e8e8; border-radius:4px; overflow:hidden;
+}
+.bar-fill {
+  height:100%; border-radius:4px; transition:width .4s;
+}
+.bar-fill.high  { background:#27ae60; }
+.bar-fill.mid   { background:#f39c12; }
+.bar-fill.low   { background:#e74c3c; }
+.diff-row {
+  font-size:10px; color:#888; margin-top:6px; text-align:right;
+}
+
+/* ── 범례 ── */
+#legend {
+  position:absolute; bottom:20px; left:15px; z-index:1000;
+  background:white; border-radius:10px;
+  box-shadow:0 2px 12px rgba(0,0,0,.15);
+  padding:10px 14px; font-size:11px;
+}
+#legend h4 { font-size:11px; color:#555; margin-bottom:6px; font-weight:700; }
+.leg { display:flex; align-items:center; gap:7px; margin-bottom:4px; }
+.leg-line { width:26px; height:4px; border-radius:2px; }
+.leg-dash {
+  width:26px; height:0; border-top:3px dashed;
+  border-radius:0;
+}
+</style>
+</head>
+<body>
+<div id="map"></div>
+
+<!-- 검색 -->
+<div id="search-panel">
+  <h2>🔁 중복 경로 지도 <span style="font-size:10px;font-weight:400;color:#999">(91개 세그먼트)</span></h2>
+  <input id="search-input" type="text" placeholder="세그먼트 이름 또는 ID 검색..." autocomplete="off"/>
+  <div id="result-count"></div>
+  <div id="search-results"></div>
+</div>
+
+<!-- 상세 -->
+<div id="detail-panel">
+  <button id="detail-close">×</button>
+  <div id="detail-title">-</div>
+  <div id="detail-id">-</div>
+  <div class="stat-grid">
+    <div class="stat-box hl"><div class="val" id="s-users">-</div><div class="lbl">이용자 수</div></div>
+    <div class="stat-box">   <div class="val" id="s-records">-</div><div class="lbl">누적 기록</div></div>
+    <div class="stat-box">   <div class="val" id="s-dist">-</div><div class="lbl">거리 (km)</div></div>
+    <div class="stat-box">   <div class="val" id="s-grad">-</div><div class="lbl">평균 경사 (%)</div></div>
+  </div>
+  <div class="overlap-section">
+    <div class="overlap-title" id="overlap-title">중복 경로</div>
+    <div id="partner-list"></div>
+  </div>
+</div>
+
+<!-- 범례 -->
+<div id="legend">
+  <h4>중복 파트너 수</h4>
+  <div class="leg"><div class="leg-line" style="background:#3498db"></div> 1개 경로와 중복</div>
+  <div class="leg"><div class="leg-line" style="background:#e67e22"></div> 2개 경로와 중복</div>
+  <div class="leg"><div class="leg-line" style="background:#e74c3c"></div> 3개 이상 경로와 중복</div>
+  <div style="margin-top:8px;border-top:1px solid #eee;padding-top:8px;">
+  <div class="leg"><div class="leg-line" style="background:#fc4c02;height:5px"></div> 선택된 경로</div>
+  <div class="leg"><div class="leg-dash" style="border-color:#f39c12"></div> 중복 파트너</div>
+  </div>
+</div>
+
+<script>
+const SEGMENTS = [{"segment_id": 9599489, "name": "망우산한바퀴", "users": 136, "records": 514, "distance": 4.06, "gradient": 0.0, "polyline": "kwmdFwa{fW?NFNLJVl@NPTNFT\\DPLd@FZGR?Vh@?PHNLB@FPHHL\\~@^j@Kb@?@HI[@a@NALFd@Jf@Xh@PV@FEd@Ln@JLVx@`@t@VRHNNN@VKf@Cb@LfBPZVRL?VMn@CXNNZp@t@DRPRVHd@KDBDFJd@PZNvBRf@t@nA\\ZVp@F`@^Fr@?v@H^\\h@jAPV`@Vf@KhAMZHNPNFBDRdA\\r@Vb@f@n@BHNNLHXHHLNZ`@@PHZBXLPBd@RJJJZ\\TLBPPHTTb@P`@`@NPXFPC`@DL?JNB@HHBTVL`@EDK?EHD?AICCMAQQe@Ui@OcAFCACGA@k@_@aA_@gBU]?WFoABUDWVw@d@ODyA@_@Ac@@EAMGo@s@EKW[WWg@QeAeAO[UOm@OUKq@Ks@Ew@SSIq@g@qA]Y?ECe@[uAm@o@SY]m@UUA][k@WmAUIGO[_@k@cAi@_@AKEY]OCKEUEi@YMAYGc@e@G_@KMKC_@s@AS[SY]EAOOB_@Ig@Y_@UAGCQc@FWAC[@Jk@@[CUq@YCWFk@?QS]]SOEGM\\}@Ji@KOGWHm@Na@@a@Ia@Jm@LYb@a@b@}AXMPGF@FJDBVCBB\\GZc@TSX_@Jc@Rc@Co@EQGcAHc@JMf@SLOJSBWr@mADCJD\\CTG", "n_partners": 1, "partners": [{"id": 13788190, "name": "주차장기준 시계방향으로 한바퀴", "dist": 4.541, "this2other": 90.5, "other2this": 91.1, "diff": 10.6}]}, {"segment_id": 11423749, "name": "[여의도]8K_2주차장기준한바퀴@ddamdo", "users": 1049, "records": 2261, "distance": 8.22, "gradient": -0.0, "polyline": "}x`dFejveW|AkArBgCP_@b@w@L[Rw@f@sAh@gA\\m@f@s@TSRWnJgIXa@Zo@\\y@xAkBLMd@]BKFELA\\Yl@Y^i@p@k@Te@n@w@r@g@zAyBz@i@`@Yh@}AJEd@]HCN?v@Jd@BBAXWF?ZH^P^HL?LG^C|ALt@e@\\c@n@aAJ_@@SEo@GYGKEAC?KNOp@?`@Fh@Px@HPP~ATTBFAb@P^F@@HEx@Fz@NfB@TDT?XEf@@Fn@|AHr@^`AFb@Fx@TdARbBJP?n@Ff@b@pCVdDRnAA^Jt@F`AJb@?VLtABb@Ft@FfB?VBVRzDIv@A~@Gx@An@CV@TAf@?d@Gn@@r@Qp@Fl@C|@Kv@U|@Mr@QzAEbAQ`AC`@q@hCG`@Mh@M\\Ij@I^Ub@O~@m@lA[rBK\\UvAa@fAQVKj@Qd@Cj@Qh@QZGTGFCH?TGT]h@Of@AROd@o@nAMv@_@jAG\\KLMH[`@CJk@f@CDCPMV{@bA}@j@MNk@Vu@j@]\\WD_@Tm@n@g@Zs@p@e@ZQV_@LgAh@c@XQRa@TYPe@Le@\\[Ls@d@UTQHa@^_@RQR[JMH_@Jg@d@[JaBbA]f@MJmAXuAn@_BTcBb@ULm@H{@Rs@Hc@@cATwBZeBHk@Cc@?IB_CtAa@I]Bc@LONYFi@Ry@Pk@?UDy@ESJMZOpA@JBFF?LSVqARcD@m@Ok@CECFEScAoAKEUa@Uk@MSUgBSiBg@yAe@qBMs@WoC?eBHq@@m@J[\\q@XgAHcACgBHy@By@H_@D[^mANy@BaADa@AeADc@B_APo@Hk@\\qATaBT_AFa@LSFYT_@H_@Ru@ZmBBi@Lk@Ni@HOp@w@p@k@`@a@XSbA{@LOXo@Vs@Xo@h@oBRg@Rg@p@kAPc@v@oALe@L{@@_@Ge@Ic@c@uAQy@CWLeAPUJ?NWJKn@U^WXWLK|Ay@JMLC", "n_partners": 2, "partners": [{"id": 13378457, "name": "여의도LSD코스-8Km", "dist": 8.2, "this2other": 96.6, "other2this": 98.5, "diff": 0.2}, {"id": 15776404, "name": "여의도 8.2km", "dist": 8.151, "this2other": 95.4, "other2this": 98.4, "diff": 0.8}]}, {"segment_id": 8584198, "name": "여의도공원 Conrad Entry", "users": 9054, "records": 87304, "distance": 2.662, "gradient": 0.0, "polyline": "wm`dFw`ueWkAaAZIAKu@iASi@Wc@Gs@Oi@w@kAa@]_@_@uA_BFs@]Yg@@e@NwAv@U^Uf@_@`@@r@jBbANj@Zb@HbAnB^`@\\r@|@~AtCNh@h@xAn@hASn@JZ^\\Tf@|@jAHt@Nb@l@pAbAZb@~Bb@tAVb@v@~@Zd@Rj@Z^`@Vl@rAb@tAVd@x@dAXf@h@nAb@Vb@Ld@E|@cANm@@m@Ek@Uk@m@sA[a@sC{E[]q@mAUc@Ok@Ug@w@cAi@mAaCuDk@sAk@kAs@iASa@Oo@", "n_partners": 2, "partners": [{"id": 5422492, "name": "여의도공원 (Start/Finish @ Entrance #12)", "dist": 2.49, "this2other": 96.2, "other2this": 97.2, "diff": 6.5}, {"id": 6471711, "name": "여의도공원 산책로 트랙", "dist": 2.514, "this2other": 97.5, "other2this": 98.8, "diff": 5.6}]}, {"segment_id": 21911568, "name": "보라매후문~1km구간", "users": 3947, "records": 28946, "distance": 0.998, "gradient": -0.2, "polyline": "acycFagseWh@`APf@TNV^Jr@?v@HLVVl@lA~AlB\\P\\f@l@pBNX@JZh@l@nANl@NrATnAFbAV~ABz@VjAh@tB`@tCLrAv@nBv@dCNZLD", "n_partners": 1, "partners": [{"id": 21911592, "name": "신대방~보라매후문", "dist": 0.93, "this2other": 96.9, "other2this": 100.0, "diff": 6.8}]}, {"segment_id": 9158674, "name": "장암대교 -> 상도교 (중랑천 서쪽)", "users": 2315, "records": 24103, "distance": 1.25, "gradient": -0.4, "polyline": "ouaeFk`mfW\\GVKLAXFl@A~@I^K~@c@`B]\\@d@GfAC~AOz@MhCYl@Mt@W~@Qt@W`@St@m@PIj@KbAIb@Dv@Nf@?hAGpABp@C|DGd@K`@S`BkArBkA|@o@", "n_partners": 1, "partners": [{"id": 10688477, "name": "상도교 → 장암대교 (중랑천 서쪽)", "dist": 1.28, "this2other": 100.0, "other2this": 100.0, "diff": 2.3}]}, {"segment_id": 13788190, "name": "주차장기준 시계방향으로 한바퀴", "users": 271, "records": 1266, "distance": 4.541, "gradient": -0.1, "polyline": "sindF}dzfW@a@B[X{@Fc@FkBCg@J_@R[b@WFKLk@`@Y\\Iz@DNAtAWLGDKAUUkAMy@Oa@CKCWBc@DGHELCZC\\I^WL]@a@BUFMDGPEZA`@MT@JJFX\\p@^^\\d@`@V^FPHR@p@EVFNT^nAf@\\ZNLBRTBT?LKp@GRSJc@@[DUFIFADDN`An@JPJtA@^@JFLLLb@ZVHNBJJJx@@PKl@Wv@?PBd@HTVRf@T`@ZL@\\CJBl@dA`@x@FFNJRDd@QTCFBPLHNDX?dBDRP^RRR^PNf@TVPn@RPPZFXLjAx@\\X`An@d@FXAb@BVHb@f@PLl@l@f@|@X\\R`@fAvALBRAz@QPBFDV^Xl@^ZLLTn@NJx@VLHNRBLFpAT~ADPb@f@JVBVELIDOE_Bq@c@[q@Q[@_@TO@]c@OKWIy@Ky@AaBHaAR[NUb@_@`@IDc@My@Gm@KWQq@w@_@m@UUe@_@[O_Ak@eA_AQI]QqA[_@Ei@@SE}Ao@i@Mk@Wo@OWQOSKI]EKEa@Wm@i@w@SQGUOkAg@i@[_Ay@OGQ?OBYEKIIQUsAc@qAe@u@Me@m@i@Oo@OS[[KSIa@Gs@I[[a@WMWEq@HSEOGU_@IQGk@AkAOQIE", "n_partners": 1, "partners": [{"id": 9599489, "name": "망우산한바퀴", "dist": 4.06, "this2other": 91.1, "other2this": 90.5, "diff": 10.6}]}, {"segment_id": 6471711, "name": "여의도공원 산책로 트랙", "users": 12017, "records": 204450, "distance": 2.514, "gradient": 0.0, "polyline": "e``dF{iteW}@cBu@y@g@gAY]qByDs@iAQe@SmAa@}@m@o@qAeBe@kAKe@_@kAUYiA{@o@cBU[[S]Ka@@[NSPQTG`@@f@PfBLp@b@lAZf@n@r@~@p@v@lAfAvBL^Fd@Jd@Vj@Zd@jAtAX`@~@|AThARn@^h@bAdAVf@d@`Bl@bAn@~@Rf@Td@l@`AVj@X`AR`@v@v@j@`A^rAV`@VPXF`@En@_@VYN[Lc@Dc@COc@aAQs@Ug@_AiBWYYc@Wm@k@{@QQQa@o@_AcAcC", "n_partners": 2, "partners": [{"id": 5422492, "name": "여의도공원 (Start/Finish @ Entrance #12)", "dist": 2.49, "this2other": 100.0, "other2this": 100.0, "diff": 1.0}, {"id": 8584198, "name": "여의도공원 Conrad Entry", "dist": 2.662, "this2other": 98.8, "other2this": 97.5, "diff": 5.6}]}, {"segment_id": 21911592, "name": "신대방~보라매후문", "users": 3624, "records": 21250, "distance": 0.93, "gradient": 0.3, "polyline": "aixcFkjqeWBIGABIECAQDI@UAQQe@iAgBYmC?[Qk@_@cBSk@Mm@_@_DOk@K}@WaAM]I[u@{A]aAYc@Sk@Qe@KcAi@i@[g@WKe@kAm@o@u@iAMIa@c@AUMq@Uq@", "n_partners": 1, "partners": [{"id": 21911568, "name": "보라매후문~1km구간", "dist": 0.998, "this2other": 100.0, "other2this": 96.9, "diff": 6.8}]}, {"segment_id": 39317546, "name": "은평뉴타운 롯데몰 실개천 직선주로 (남-북)_by Jake", "users": 1198, "records": 26768, "distance": 0.25, "gradient": 0.0, "polyline": "oxudFupseWQA]HSCcAFGAa@@SAa@JO?QBi@CSB_CF", "n_partners": 1, "partners": [{"id": 30500603, "name": "롯데은평몰 도로방향 200m 쥐어짜기 구간_DDRC crew", "dist": 0.208, "this2other": 100.0, "other2this": 100.0, "diff": 16.8}]}, {"segment_id": 25604141, "name": "하늘공원+노을공원 둘레 1바퀴", "users": 5158, "records": 31123, "distance": 5.881, "gradient": 0.0, "polyline": "wbhdFgmneWm@_@YKa@JWBu@VkA`Ac@P}BpAwA~@o@\\yA~@c@\\_@R]Xc@b@KXUVg@~@CN]~@UFq@j@Sl@UZU~@Q|AKT]f@Wh@[|@[VYh@s@z@m@lAyAdAq@Xc@JQPOXY^i@l@ARPb@CXQn@MLaAjAe@bAa@ZkAxBSf@MNs@jAa@\\oAfBQN[t@w@t@w@d@WTKVu@x@SJ[n@IFCJMRAL[l@AJIPMDOZ_@nAMXe@v@GZ]l@GV?LCDIj@IVAv@Or@@TFRBp@H`@HJVr@L|@HNPj@p@rANl@Rb@J`A\\lAHh@@n@LRGf@Rz@Bz@Jh@BtBCPF~@L`ABv@Jf@XfAl@p@HNJFT^RJHRXVd@`Br@h@Xb@PH\\n@I@KICILGXB\\HL@TENYH[Tg@n@}@LWPc@Zm@tA}BXYTa@`@aAXe@Xq@l@_A^mAl@sARc@\\y@R[Tm@RULYPg@l@gAd@oA\\k@d@eA\\m@Na@Jc@\\a@~@eBPo@f@cA`@eAh@y@Rm@R]JIDIn@y@d@uAVe@Le@l@_AL[XWN]R]LIV{@ZsAJS\\QL]AUB_@z@uAj@yAX[?YBKTi@TUV]BKNOf@iAd@k@Va@TMJa@NORa@Jg@Z[V_@NYBCPWHQFc@v@oABILOPo@^i@h@sAb@y@J]d@iAFa@L_@j@qAZSfA_CJg@Rs@Cc@CQ[o@ICa@UgAaAyBiAQEe@a@]_@IMm@k@o@_A_@c@YOKQUSa@g@o@i@", "n_partners": 1, "partners": [{"id": 14412611, "name": "Around Noeul and Haneul Park", "dist": 5.892, "this2other": 100.0, "other2this": 100.0, "diff": 0.2}]}, {"segment_id": 19367490, "name": "앵봉산 (의무경찰대-보덕사)", "users": 1886, "records": 4114, "distance": 2.81, "gradient": 1.0, "polyline": "inrdFojqeW?q@QEMKGoAGu@@SAYSe@[Qe@Au@SyAm@OUQKeACkANMFc@v@[|@KL]VMBY?SDK@SIUBg@Te@h@MHs@XWFsARw@PSE]Me@c@e@oAy@aAGMOK[YEMY_@EUEG_@USUYKEEGOCCGDKI]GECEKM@g@EIB_@IYBw@?_@Mg@?IACGOGe@OW@]AcAHc@H[PUFOAaAVMJ]d@i@dAMPMj@AAMDO^OREDYHk@`@q@Rq@Dy@\\m@b@OPo@TSDK?eA?[E]W[g@WOOSSIWYc@a@EI?]CKk@a@m@aAKc@IOa@[QW}@y@OYg@k@IWS[Qm@Go@EKGc@GG]e@c@]g@WiB?i@FGEDKJI\\IFENQVw@@_@Q{@GeA_@o@Ki@U_AGq@EMQcAK}AOHUB", "n_partners": 1, "partners": [{"id": 32297898, "name": "앵봉산 (보덕사-의무경찰대)", "dist": 2.7512, "this2other": 94.0, "other2this": 100.0, "diff": 2.1}]}, {"segment_id": 9726027, "name": "bulgwang stream(불광천) 5km", "users": 88, "records": 294, "distance": 5.14, "gradient": -0.0, "polyline": "s{jdFkoqeWDTDHVZJDR`@XbAb@r@\\Vb@Vx@`AHRFFjBrApAvAbAz@D?M^G?k@WmAcAu@g@_AiAgBiBUM[Yi@e@c@g@GCEG?ICIe@i@S_@eAgA_Aw@MOw@m@QWa@]_@a@_@q@Y]q@k@Y]s@i@W]QSSYm@k@m@{@}@w@_@Wg@u@MMGWIIECq@i@a@e@mAcAcAgAu@m@a@i@USWMcCgBgAc@kB_@KG?GF]EGm@I_@Cy@[_@Bi@Oc@@_@O_AKkAYYK}BUkC]wA]k@E_@OiAGy@SmAIYG[Cm@QYAe@GOGOOOEQ@MDGAa@Ke@U_AGk@WeAOc@Ou@CYIWA{@SQ?YGw@Ii@OQMJDZBD@HNl@NdBN~@VTJhAJj@CZNf@NP@dB^XEJDHHh@N`ALrDt@d@Dr@P`ANXBRATNVHfAHhAR`@DtA\\|AJbBT^Lj@D\\?n@DFA\\DfB^`@RZBZF|ARvBr@r@\\f@`@`@`@FNX\\d@b@PXlAfAXb@l@l@PXXTPTb@Jb@XJZRVHPv@x@`@ZJRb@b@JRZ^f@^PXNPJD\\j@t@|@NHVZl@Zt@n@^b@`@n@PNZj@Z\\XN", "n_partners": 1, "partners": [{"id": 19119777, "name": "Mini MHJ LOOP", "dist": 5.51, "this2other": 100.0, "other2this": 90.4, "diff": 6.7}]}, {"segment_id": 9759312, "name": "봉화산 한바퀴(성덕사 약수터 큰바위)", "users": 30, "records": 116, "distance": 3.662, "gradient": 0.4, "polyline": "s}odF_htfWg@R]]SM]XYn@QHSd@_@j@i@b@\\v@C\\_A`AWBa@jA]\\OJ_@WKCC?_@Xc@Fa@La@VaAMYDUYQAMRMHMNKRe@E[q@MKUJy@@a@FMIYIOw@@o@Cg@w@a@cAOq@Jc@Ui@c@SQYw@Y_@OBWKJy@s@e@e@g@Qa@c@a@EW_@u@Nc@\\ShAh@x@Xx@@FUTe@Pi@`@Cl@@FCDw@Va@Re@\\W?s@ME@c@G[Z@RMb@Id@MRc@Dm@X_@XE^WLQXw@`@IHGXiAW{@a@Ga@Mk@eAM[GI[Tu@JKF_@f@k@FMU_@Ge@Ja@E]Qo@uBLOB?XWEK@YLoAtBsAn@RJ?Z]Fm@Gk@@m@DKb@If@?Fe@EWPa@FAf@JHQ@w@RKTEPKd@C\\ZDNIj@@h@Jd@Dj@PXDL?JVBRh@XPXE~@n@`@RZDBz@YRQh@]`@AJ\\NHL^Vh@n@@FPNXz@`@FRJHTB@F?NSDBNd@P\\ZR^QRJX`@\\SN?TG\\HlAr@LJ", "n_partners": 2, "partners": [{"id": 26182386, "name": "Bonghwasan Counterclockwise", "dist": 3.92, "this2other": 100.0, "other2this": 91.1, "diff": 6.6}, {"id": 28037549, "name": "봉화산 둘레길 1바퀴_반시계방향", "dist": 4.1232, "this2other": 100.0, "other2this": 90.2, "diff": 11.2}]}, {"segment_id": 21102177, "name": "휴먼링 시계방향(꿈에그린)", "users": 520, "records": 5940, "distance": 4.351, "gradient": 0.0, "polyline": "aqvcFuq~fWU@gAAm@GgACwBQW@cAWc@O}@_@eBiAq@e@uAm@iD{BsEaBMY@yBIuB@oCBk@Ho@A[DuARcARw@Di@G_@s@gBCYDwA@aCD{@C_EBYLQnBFjBNdDCfAD~@?TBNAhEb@nEHlBNlAAl@@rAAdBF\\?h@Dv@?vCNhABj@Ff@@r@A|@Dh@Jv@Bz@LhBb@pA`@TH|A`AnAf@PLJRGxBDp@ANg@lBCT?t@CNERYj@GVMp@?XDp@Jd@l@jA@\\KnACxAF|@H\\GX@ZCl@Op@@^HZNVHt@d@nBt@vB@\\g@hAMNkEKk@K_@C}BAa@CgA?qBM_ABs@IaA?gBEe@E{AGu@A_A@eAAaBGe@GMOESAS", "n_partners": 1, "partners": [{"id": 23927990, "name": "휴먼링 4.3km(위례수변공원 분수대)", "dist": 4.35, "this2other": 100.0, "other2this": 96.8, "diff": 0.0}]}, {"segment_id": 26653817, "name": "Dosin-ro 9-gil", "users": 41, "records": 441, "distance": 0.373, "gradient": 0.9, "polyline": "if|cFcroeWKDQZUZ?JEHUV]NYFYBUIABSDm@XAFGBC?c@J[^aAZY^a@bA[VU^Qd@", "n_partners": 1, "partners": [{"id": 26665360, "name": "Dosin-ro 9-gil down", "dist": 0.37, "this2other": 100.0, "other2this": 100.0, "diff": 0.8}]}, {"segment_id": 6884991, "name": "석촌호수 런닝코스", "users": 10547, "records": 166408, "distance": 2.534, "gradient": -0.0, "polyline": "ar|cFk}vfWCY@k@Cw@E_@Ow@Y{@GGGc@YeAOSOKGMOSKs@Ai@G_@KSOQ_@eA_@w@g@u@Wq@WKMKI?QLw@`@O@WIMKa@g@[sAHMGh@GKBODIl@q@H_@Ee@Qu@SUMg@[a@Qe@W[Si@U[KKk@{@USS]o@u@Yk@k@c@SYECMAe@e@}@]_@CSEUBo@TSPGNGb@?b@`@rAf@nAdCxEXhAHl@f@fBHb@d@lARTNLj@PF?^UVUBGCIv@DZRZb@AFL`AHAB@DB?J{@nAI`@Ej@@PFPJNBC@TGt@Pb@CZTl@^`@Nz@Zv@Df@nAnCRTJF\\f@b@h@~@h@j@NL@`@@b@Ab@?f@SRSP[FSAOLe@", "n_partners": 1, "partners": [{"id": 14710004, "name": "SLakeCircle Start East", "dist": 2.652, "this2other": 100.0, "other2this": 100.0, "diff": 4.4}]}, {"segment_id": 19165318, "name": "경복궁_시계방향[2.6km]", "users": 5467, "records": 27966, "distance": 2.642, "gradient": -0.0, "polyline": "{bjdFgt_fWXNh@j@PVFLFn@Aj@HvC?dADl@?jAIjAMlD@hCIb@c@j@iAJyAFWF]L_ALaBB]Da@JoAD[EY@UGE?e@HoBJs@JsAFe@Fi@AS@k@GUDGAWUG?ODWRG@u@AsAJ[CKGIJG?s@KQUOEa@CEEG]?OCQGW?OEi@ASMq@AYIc@Cc@@YIQ@YDWIe@AQJK@GWwADa@Eg@D]JWLkAAi@Tq@E[Bc@Fg@HS@u@Jm@R[JKFUj@g@l@QTE\\Q`ACRD~@?h@GZ?XFL?f@D\\Rn@Fl@P^@RHVDdA\\p@HjAXPE`@Dh@Id@?^BX?RLd@Bl@IbA@f@FNId@DRGf@H", "n_partners": 1, "partners": [{"id": 22050498, "name": "경복궁 반시계 방향", "dist": 2.61, "this2other": 100.0, "other2this": 100.0, "diff": 1.2}]}, {"segment_id": 15776404, "name": "여의도 8.2km", "users": 888, "records": 2104, "distance": 8.151, "gradient": 0.0, "polyline": "q}`dF_greWCGCA}Bd@g@B{ABa@B}A^o@XoA?m@Tg@^CFq@D}@LeAG_@BINGXCp@Bf@B?Tq@Jw@PcEGo@Yo@a@c@Y_@Wc@Uq@WuAKs@Mk@cB}EOk@WaBEq@?cBHgBNq@j@yANq@Fo@?cBJwBj@oCLy@Fm@BsCDq@Jo@j@kCf@mCtAiENo@^oCRm@Vi@V]z@{@~BsB^c@bA{BbBuEXg@Tg@Nm@d@wAJm@?q@Ko@k@iCEq@Js@Pc@^a@~@k@z@q@d@[fAk@nAu@l@i@\\_@tAeBfAaBTi@`@sAf@sAr@sAt@mA\\a@z@u@jBcA`BoAZa@|AyBdAwBz@mA~@y@h@_@dCeCx@aApBoClD{D\\[f@GtAG|A?vAEnBMrAi@bAs@Vg@?q@Mk@Sh@Ix@@JT`BFNLl@VlBBn@ZlAJv@FbBHj@ZrAf@pAv@rEj@tDz@bHV|CXjBRtCPbBPrCB`BGvF]fJA`B[jCOdBq@bFMl@yBfIg@rA_@dBc@vA]|Ae@~AsAjFw@bCa@`B{@`CYh@y@pAsBrC_A|@a@X]\\a@Rm@N[b@iA~@eGlEiBfA_@XgAl@iAr@mBfAa@Z}At@wA|@aAr@c@TG?SJiAn@g@Tq@T_Cj@k@RmAXqAVcBV", "n_partners": 2, "partners": [{"id": 11423749, "name": "[여의도]8K_2주차장기준한바퀴@ddamdo", "dist": 8.22, "this2other": 98.4, "other2this": 95.4, "diff": 0.8}, {"id": 13378457, "name": "여의도LSD코스-8Km", "dist": 8.2, "this2other": 98.9, "other2this": 96.6, "diff": 0.6}]}, {"segment_id": 20377755, "name": "Seonjeongneung CW", "users": 1003, "records": 7714, "distance": 1.98, "gradient": -0.0, "polyline": "{r|cF{{lfW]j@g@dA_AbBy@xAa@v@a@p@W\\y@p@w@`@QHC?SWcAiCy@qCo@kCKgAq@wBOm@a@{BOq@SmAQ{@Qe@Gi@Ia@DOfCwB`FgF^g@z@_ArAcBf@_@vAmALIN?`@FPHHJJVNn@l@fB`@vAB\\FnEC~BSlDIzCGv@M`DM`A", "n_partners": 2, "partners": [{"id": 1237484, "name": "Seoul Korea Park Run", "dist": 1.992, "this2other": 100.0, "other2this": 96.5, "diff": 0.6}, {"id": 11272585, "name": "Seonjeongneung Park counterclockwise", "dist": 2.04, "this2other": 100.0, "other2this": 98.7, "diff": 2.9}]}, {"segment_id": 30522012, "name": "꽃향기 런", "users": 20, "records": 111, "distance": 4.7, "gradient": 0.1, "polyline": "iyodFo|neWJBJEHUj@P~@f@RFHCf@C\\FNCBERI`@@XJ`@ChAl@p@Tf@Hd@D^Rn@R\\Bb@Kb@An@D`AGnBGfAFbAh@^Zt@dAX\\dA~@fAxBv@lAn@v@lBvAlAf@`Bl@ZZ@FbAj@^Zb@l@VRV\\Zr@\\\\TNh@h@`Ax@Vb@Th@Fr@Ep@Dl@^v@@AES?MB?NTRj@VzAVl@\\b@d@d@j@Zr@j@pDlC|@`ALRRl@fAxAL`@[Z_@E{AoCm@{@a@c@s@q@_@WgAm@mBoAu@a@]a@q@cBOg@Q[Sg@EQBE`@`@Sg@Oi@S}ABo@Mm@_@[}Au@y@y@_AqASUGCc@Ea@P]^Kj@?VLl@ZZ`@Lf@@d@FRTPb@\\`@d@GZa@?o@I[BAp@VeAs@a@[]a@}AcC[_@qAo@cE{AaAm@a@QyAyAw@gAg@qA][e@iA[a@m@oA_@Y_@SqAQiCFg@Hy@Bc@OeAAc@Ea@Ua@KaAa@e@EY?e@SiAAQHmACa@MeAIe@Ig@DiADa@E", "n_partners": 1, "partners": [{"id": 30528360, "name": "꽃향기 basic course", "dist": 4.1326, "this2other": 93.3, "other2this": 100.0, "diff": 12.1}]}, {"segment_id": 7989921, "name": "Climb from the cross to the pull-up bar", "users": 755, "records": 1511, "distance": 0.73, "gradient": 11.8, "polyline": "o{idFsj}eW@XE\\ATUlAYbAUjAO\\[b@WTYFc@Tc@NON]NOLW\\Wd@_@|@e@~@i@l@YLi@Ni@Vk@Pi@\\WJYPQPY`@k@lAUZu@d@MBM?", "n_partners": 1, "partners": [{"id": 21694739, "name": "Inwangsan-ro Descent", "dist": 0.75, "this2other": 100.0, "other2this": 100.0, "diff": 2.7}]}, {"segment_id": 16368802, "name": "Clockwise Loop", "users": 55, "records": 153, "distance": 5.63, "gradient": -0.0, "polyline": "md_dFaoleWV?d@L\\@d@Ab@KfBFJBNLHLDV?PG`@Bd@P`@BLGbA?fAKr@EDw@GaACs@Be@EuCAk@Ho@GcAGw@?}AG}@@]FoADc@LwBXo@No@Bo@Ho@h@ULy@t@[LuA_@o@a@e@USOWMy@k@_@g@c@QKSOwAM_@KM_Bk@o@Qm@OWAKIUYWSg@k@Qu@Ae@He@HgBIiC?YOk@IcAESWi@Os@S]Ce@Qw@CMWc@Sm@Ou@]i@S}@Wy@k@s@o@_@UG[Yc@SiAOW]u@k@sBq@WS_@MWQq@QWQ[MWCq@]WUcCq@cBWc@@oATi@T[Hw@\\MJc@N[TWJUP[JWVsA`@m@j@MFICOc@OwAYiASoAs@yBLKb@Oz@Q~@a@\\IRQt@e@f@G^ARGRKn@i@LAh@N^Ph@^f@NZBh@Gn@@`@E|@Ad@D`@ClAJ`@Jl@Hl@D|@JVNXDTNVJPHr@Nr@Tf@Z^Zh@^Rd@HHf@RV`@b@LvAx@^@x@Lb@J`BtAPb@Lr@N\\JRXVt@hBJx@BNPZH~@Pr@?PMj@BVP\\j@`@L^NPNv@j@fBDh@H`@`@~@PTL\\VXLVd@\\XX\\Xb@h@bAl@rCnAh@Lp@DZDX@r@C`@KrAHlAMd@MV?ZE~AGTKRCN?\\Dh@K~@C\\G", "n_partners": 1, "partners": [{"id": 5847849, "name": "Loop run", "dist": 5.56, "this2other": 94.7, "other2this": 94.9, "diff": 1.2}]}, {"segment_id": 19119777, "name": "Mini MHJ LOOP", "users": 30, "records": 51, "distance": 5.51, "gradient": -0.0, "polyline": "wnldFkzreWr@Hx@L`B^`ALzAb@x@ZjBtAxAzA|CnDv@bAVPXj@v@j@rApAnC~CnBdBzCpDl@l@Z^z@z@nBxBTd@Zb@zBlBlCnC`@Xv@`A|AzA?Z_@l@g@GoAmAqAuAwBsBoB{B{@{@y@aA][oA{AkBgBaCiCs@o@uAgB}@w@aCoCy@w@kFyFsA_B}BoBaBw@gA_@sCc@qAOgAAu@[eAIyCk@_AMc@Mw@OgAKuB]_@Eq@Ke@?_ASc@QiC]iCi@mC]kAUc@EoB]mAYyAMqBa@c@Qk@Mm@Iq@CWL[A}@QKy@M_BDGpAVbAJlAR^Bb@P^JfGfAhCh@jALjATb@NlALlAVb@FhAVlAN~A^j@Hf@Pf@HzC^nAJdCd@nBPnAPf@Fb@HBB", "n_partners": 1, "partners": [{"id": 9726027, "name": "bulgwang stream(불광천) 5km", "dist": 5.14, "this2other": 90.4, "other2this": 100.0, "diff": 6.7}]}, {"segment_id": 39849637, "name": "SMN봉산", "users": 165, "records": 360, "distance": 6.58, "gradient": 0.0, "polyline": "gjldFyupeWYEMGM_AKMSIG@IFAJOTUPQrAi@v@GPSfAK\\MJKDQNOFe@?QF?PMv@BTAV@NMf@MRODQLc@NKTWv@m@v@]HOESBe@UMCWASHQAYFMJQD}@~@UD]@_@VYHKHE?MKKBOOCKUGQOSCECYa@CSO]u@[SOc@s@QK]c@UKc@q@_AkBAMOc@g@y@GEQCG@MJYLSBW@[LQ?IFk@p@O@MDm@?[BSPK@QHW?e@HGAODMGMKWIYSa@E[?I@OCK?GCGI[F_A?SFMTE@MAMBWCO@m@?IFQ?EDI@g@I_@LGD]PIH[Ru@P[NIHELOHQDENO@e@SI@IAKZYNGFUJU?WMc@EQSc@SWFe@^e@NKCCg@MWBSCSBUEuAWeAc@c@QIOAKKMBEAIMEA_@H[@KCK?e@Z[DID[?QCI@[A[HS@QHI@IESBKEILK?CCGA[Hm@IKKKCSOc@Oa@[_@OOEG@MFI?KDW@GAKDS?UEMDMCOBs@@k@VYB_@RQBOAg@Q]AYEOAOFk@FGCWA]XI@QHa@JSNq@h@Wj@OAKOg@Dg@Q[Ju@DYDo@XO@A@P?VWF@FCXGx@ELGVCNBNFn@G@BBJLHJEJi@JILGFIRMRQ^Ij@]LCt@Bd@Oh@HPAd@LJFPEF@LKJ@JKLAx@YX@TEb@BLINFF?PGX?PCH@TML?^RZJb@Xf@P\\TF@HAJDZGVLFAJOPDV?TG\\CPI\\BFANBf@AXIPMb@SRJTBDADIN?FCF@FFHBFCH@JLZBLJRZRbAAXDRCLHr@CFBTGFBR@l@`@JLSFEJAJSd@[f@`@VNf@DVFHCL@FEF?DIb@W@SHDDAHBFAPJL@FIDKDAJ@HGJKDOPCJIn@IPMB?DBHKF@Ra@JEVCFCL@HC\\DBCB@TOBGP?TDZARFd@QLWPODDF?ZRLEDBRAJGFHPBRAH@TCPHN?~@l@TBZ?LGR@TCr@[`@@FCNAR?FB`@m@TSHCZAROT?`@WVGJ?N@RR\\p@Rn@TXVn@TVTl@VLRXb@X\\p@\\Zr@RPj@D\\`@RRPJDFATXb@Hl@WVQ`@CRINULEt@m@PIJ@JEPARGZHNNRFT?JBd@IHS^_@BSLS@OP[HEH@BGLAHGTGRYFq@GQ@KAUXiAJCDBT@NIFKVOLETg@?WJS@UHUHORMJKFQDUDKDUDI@CVEJWFIHCVLXFBRVT", "n_partners": 1, "partners": [{"id": 14931197, "name": "Bongsan Peak to Park - Eunpyeong Trail", "dist": 3.61, "this2other": 98.1, "other2this": 91.8, "diff": 45.1}]}, {"segment_id": 21967535, "name": "서서울호수공원 호수변", "users": 921, "records": 29442, "distance": 0.66, "gradient": 0.0, "polyline": "wt`dFelbeWd@MV_@PeAp@w@l@i@Va@t@}E@m@g@Oc@Ce@N_@Vw@`BWb@u@xAUh@UvACdAFp@R^b@A", "n_partners": 2, "partners": [{"id": 32792531, "name": "서서울호수공원(CW#04)", "dist": 0.7, "this2other": 100.0, "other2this": 100.0, "diff": 5.7}, {"id": 32792538, "name": "서서울호수공원(CCW#01)", "dist": 0.68, "this2other": 100.0, "other2this": 100.0, "diff": 2.9}]}, {"segment_id": 23927990, "name": "휴먼링 4.3km(위례수변공원 분수대)", "users": 502, "records": 6502, "distance": 4.35, "gradient": 0.0, "polyline": "oiucFyq_gW?n@Fr@Nh@Zb@LXBn@UjCCfBJzAKl@@j@Pn@Jr@Nh@`AjC^rAGTUh@YZiBSmAGi@?g@IiACe@DkAEoBCmEg@wBCqAFe@Fe@@e@AwBMe@@yBKkAEkAOqB@iAKc@Ka@SmASc@Qg@WeC_BaAa@a@Yc@]eAk@u@q@a@UeAg@i@Ak@Ec@OKc@?_DE{@@eBFiCJuBT_APg@Jm@Im@k@oAMm@BaHTgELYZ?d@Df@?h@Bl@JpADpBPnAGnANbB@f@Hj@@b@Cj@?b@FpBHf@?`@Ld@?d@Dd@GhAMhALpADf@LjA@nAE`E^h@@n@Ef@@d@Eb@@j@BnB`@`Ct@|@b@jAt@^Rf@Nb@\\BPI`CD\\CTMZWb@Qh@GnAERg@hAIh@", "n_partners": 1, "partners": [{"id": 21102177, "name": "휴먼링 시계방향(꿈에그린)", "dist": 4.351, "this2other": 96.8, "other2this": 100.0, "diff": 0.0}]}, {"segment_id": 20824762, "name": "서울식물원 습지원(CW#01)", "users": 4395, "records": 33579, "distance": 0.72, "gradient": 0.4, "polyline": "ilidFicceWGZEJOL[PQFa@Do@KUIKKIEoAmAMGQAOJ_@n@YTU@SMOWKWS[SQSAYJSDK?OE[[Sg@Yg@OEK?IDI?IDSNO@CBO?[Um@}@aAgAIAQKUGI?MBWTW?GE", "n_partners": 1, "partners": [{"id": 20824793, "name": "서울식물원 습지원(CCW#01)", "dist": 0.713, "this2other": 100.0, "other2this": 100.0, "diff": 1.0}]}, {"segment_id": 22050498, "name": "경복궁 반시계 방향", "users": 3653, "records": 16132, "distance": 2.61, "gradient": -0.1, "polyline": "wnkdFqu_fW@R[tAIfBg@tC?\\Kz@CbAEj@JZHp@@VGb@\\tEDJ`@bDFTHH^?LDDTZ?XCVFd@?r@K\\L`@Cd@Bb@ENBT@DCXEVDLFdBE^F\\?pAALFHH^DfAW|@Cf@Il@ShAC^EbBAx@W\\[b@ANCXB\\Cf@KPYHo@Bi@?y@Dq@Aw@Bq@FoAHs@Bo@Oy@AkABw@?c@MwAC_AQg@eA}@UKq@Dq@C]I[CY@eAEcAE[I[Ae@BaA@oBCs@G[Ka@Sq@i@kAW[CsAk@{AFs@@q@HUH_@DeAZ_@P_AfA", "n_partners": 1, "partners": [{"id": 19165318, "name": "경복궁_시계방향[2.6km]", "dist": 2.642, "this2other": 100.0, "other2this": 100.0, "diff": 1.2}]}, {"segment_id": 21610694, "name": "삼육대 트랙", "users": 81, "records": 1699, "distance": 0.8703, "gradient": 0.0, "polyline": "g|vdFiuxfWTv@D^D@TEZC\\?HECM\\UAIEC?MEGIAGKi@Ga@KYQC@Dd@BHDBFz@DRAFF@\\Et@DTJEECUHQBUKIEm@Ik@a@a@q@OM@UAGBELC\\?l@Jb@LhARBVG\\Eb@JBEGKJq@ICB]I}@GOAQS[IAS@]BIFCDIPAZ@h@FT", "n_partners": 3, "partners": [{"id": 21884653, "name": "삼육대 트랙(@y0_hee)", "dist": 0.75, "this2other": 100.0, "other2this": 100.0, "diff": 13.8}, {"id": 38159215, "name": "삼육대 트랙 1km", "dist": 1.0048, "this2other": 100.0, "other2this": 100.0, "diff": 13.4}, {"id": 38159226, "name": "삼육대 트랙 1mi", "dist": 1.6225, "this2other": 100.0, "other2this": 100.0, "diff": 46.4}]}, {"segment_id": 7440088, "name": "[휴레] 남산업힐(약수터->버스정류장)", "users": 8750, "records": 25456, "distance": 1.771, "gradient": 5.4, "polyline": "gaedF_ncfWt@FZZ`@RhAc@hAWxEmA`@Gf@ApBP`@Z\\`@b@JjAFd@LZ\\Vb@\\\\~@l@v@bAjAfBx@`ANj@Cb@Ub@a@ViA\\a@TSf@Q~AaAjDEr@W`@e@PY`@Il@Sj@c@RiAFc@Kc@Uc@Qe@IiATc@PiAXiARc@Ke@Aa@N_@XyA|AYd@k@tAWb@aAt@", "n_partners": 1, "partners": [{"id": 8231277, "name": "The Descent", "dist": 1.77, "this2other": 96.4, "other2this": 98.6, "diff": 0.1}]}, {"segment_id": 20824793, "name": "서울식물원 습지원(CCW#01)", "users": 3810, "records": 25966, "distance": 0.713, "gradient": -0.3, "polyline": "cmjdFolceWJGRCd@WP@VJPHRT^h@JFR`@j@p@RFr@U`@EVLl@dAZXVDBAR?`@KL?BBB?FFd@~@TVJBH?NGh@w@TQP?`@Zv@x@NJPFFF`@DH?PEf@CPGNILML[", "n_partners": 1, "partners": [{"id": 20824762, "name": "서울식물원 습지원(CW#01)", "dist": 0.72, "this2other": 100.0, "other2this": 100.0, "diff": 1.0}]}, {"segment_id": 17347817, "name": "목감천10k run", "users": 52, "records": 332, "distance": 10.01, "gradient": -0.0, "polyline": "gsvcFuqeeWz@RN@FAVDNGJBFEDBDED@`@OR?XFJ@b@RPD`@RBChAAVFHI`@Jl@E^Kx@@dBl@RCjANV?v@HR@VC~ANXHJ@d@PDKH@tBl@fARh@T`An@dA~@\\Pt@~@n@h@`@d@^^p@d@`@^BABLr@x@\\Z^V^JdAP\\?BCk@J[@u@Mc@Ok@e@q@s@IOKASY_CaC}@eA{@y@yAkA{@e@m@OkCc@[MC??DEAYISQQ?EESCuA?a@G]@UAW@SC]BWEi@AMDQ?e@EkAUa@?g@Kq@AQEQ@@CMC]?gBI]GO?y@I[?s@EU@QCS@e@Aw@MoBQ_BUW?[EO@_@EO?q@KwAD{@Ca@C_@@a@Ee@?YEm@?s@KWKUOg@a@YQOSCOSo@MDCCEOWe@Ke@MwALkA?a@AQF[?[g@m@DE\\CFMR}@F{@HWDYR_@J]Bw@@uBM_CAk@CWYs@g@aASSw@m@KSU_@Wi@e@o@c@c@c@Ug@G}@WIGe@So@]w@Mc@QSCoBqA_@o@Uq@A_AEa@Ki@A[GSGGE_@CiBGm@Og@a@u@y@c@WSAEOE]U}C{Cq@g@q@s@[SQQWQQUi@a@e@[q@TRs@@FQIc@e@c@S]BW[KEGOKIEGe@YEO]WGCIWBO[o@G[IQc@wAIm@Um@Gi@?k@IeAQeBOm@e@}@Y_@{@yAeAiAUYYW_@k@f@Xx@l@v@|@t@xAz@xAP^J\\TbBLpBCx@\\jAHh@L^Rl@b@p@RRRFhAx@n@ZJBRJVRJLv@j@X\\~AvA\\`@~@x@`@`@d@^d@f@v@j@bAbA\\T~@x@TZ^h@P\\T`AHr@F|@?l@Lf@FpATfABHZ`@Xf@d@`@nA^r@XTFXL^J^PrAp@h@L\\Lh@j@Zb@`@b@t@nAXn@ZZJP^x@TbA?x@Fz@AbAFzAAPMr@@t@GNQVMj@w@fEIfA?hAHx@H`@d@rADV@TD@PC@BZPd@b@z@p@`@NZDjBHdDC\\Ef@Ax@L`ADd@JVBbA?|AJf@APD^@h@Mb@Ch@JZ@TFb@CJDP@^FLHd@Nx@FTLLD\\?^F?MFENJv@y@FANHZCTD@HDHJDHJn@TJ?PH|@Df@?|CZ`ADj@FDDF?VNLD@BZ?tB`@~Aj@pDzCXVV^h@`@l@h@rAlA@BA@H?HNx@|@~@n@ZJf@Jd@BP?e@Fg@Ak@IWMaAu@cA_AKODKACqA_A]_@aAw@o@w@w@q@", "n_partners": 1, "partners": [{"id": 28298058, "name": "목감천한바퀴 by 뚜비형", "dist": 8.3, "this2other": 100.0, "other2this": 100.0, "diff": 17.1}]}, {"segment_id": 21884653, "name": "삼육대 트랙(@y0_hee)", "users": 87, "records": 2613, "distance": 0.75, "gradient": -0.1, "polyline": "e|vdFytxfWZ|A?JBFN?b@Iz@SRYAUGa@Sq@WyAOa@ECMAGBgA^SLCD?Z|@lEJFtA[\\[@m@So@W{ASo@e@AiA^Of@\\|A", "n_partners": 2, "partners": [{"id": 21610694, "name": "삼육대 트랙", "dist": 0.8703, "this2other": 100.0, "other2this": 100.0, "diff": 13.8}, {"id": 38159215, "name": "삼육대 트랙 1km", "dist": 1.0048, "this2other": 100.0, "other2this": 100.0, "diff": 25.4}]}, {"segment_id": 13232366, "name": "광진교(북->남)", "users": 3514, "records": 12980, "distance": 0.95, "gradient": -0.2, "polyline": "eeddFk_yfWr@kDNsAd@{AFWFu@H]FMHq@Nm@Rc@J_A`@qAZwA\\mATeBRm@Lm@\\gCN]\\{BH_@Xw@PsANm@Re@HYNoAb@cBNkAZw@", "n_partners": 1, "partners": [{"id": 18377077, "name": "광진교(남->북)", "dist": 0.89, "this2other": 100.0, "other2this": 100.0, "diff": 6.3}]}, {"segment_id": 20824817, "name": "서울식물원(CCW#01)", "users": 2080, "records": 28568, "distance": 2.312, "gradient": 0.1, "polyline": "yhidFybceWK`CAdCBPJJbA@NFH?NDx@@FDX@HDt@?TDj@DFD^HH?FBX@FJFC^FX?LDnAHT?D@HALBd@BLBVBTDR?XFX@BD\\HVN^\\j@|@b@v@l@n@HPV^PJR?f@SL[^{ALUZW\\OLADEH?n@KdBB^CVIDIFg@d@wBFq@BcA]wBMiAKSMG]FGFE?WJ[?SHI?IDO?CEW?EAQM{@w@GACEOAIFWZGJUPUXU^C?SVc@`@MXc@f@IVY\\KFQGg@c@aAi@_@]IAe@Yu@UaAOk@Oc@U{@u@UKMM[Sw@YiASYSq@_@e@CY@WHUN[\\O^KHCJC@Mf@A\\", "n_partners": 1, "partners": [{"id": 20824836, "name": "서울식물원(CW#01)", "dist": 2.33, "this2other": 100.0, "other2this": 100.0, "diff": 0.8}]}, {"segment_id": 26182386, "name": "Bonghwasan Counterclockwise", "users": 20, "records": 90, "distance": 3.92, "gradient": 0.0, "polyline": "yxodFy{tfWI_@MWs@w@AMBk@MSq@_@CGYSSEw@Aa@Dg@YEAOBKJ[MW]SNQe@UUMKe@Og@sAKGa@a@a@YCIYGHw@Rc@JIBq@EYaAs@GIa@SSBMCOMO_@]GOi@GO?QQg@AOCk@@WAm@GM_@Gc@N_@RKj@CFKBICUBKf@@JKVQ@c@Na@V@n@JZIp@]ZW?m@K_Ar@ORWPEl@Qf@S`@a@TAh@Nj@Tf@`@XZJVGP@XVJD^MT]PEX@h@_@B?f@r@LHNBZR@FrAVZZDHO~@IR]RU`@Qf@IFc@LONw@`BSDI?o@RED[DGDIt@JFN`@?X]n@Y`@Kn@a@Ng@A]VCTGHWt@a@FO@a@UgBc@WPORCHGv@D\\TN|@pA`@LBHGfABFf@BRPDPTd@Z^ZPZXNDr@?NDd@DFDRRFNJLTtAn@l@r@Or@CHDTZTTTAPADGRIb@_@TFBJB?TI@Bh@Hd@Ir@Wr@CPQd@J^SJIRg@LMv@g@t@k@BISe@Gi@DE^O\\w@H]FKNAFC`@iABA\\H`@VLA`@UT[HGDSTe@d@Nd@DRCLORCDaBQiAWc@?o@DOAq@U]@]H_@@m@Iq@", "n_partners": 3, "partners": [{"id": 9685788, "name": "[휴레] 봉화산 둘레길 한 바퀴", "dist": 4.01, "this2other": 100.0, "other2this": 100.0, "diff": 2.2}, {"id": 9759312, "name": "봉화산 한바퀴(성덕사 약수터 큰바위)", "dist": 3.662, "this2other": 91.1, "other2this": 100.0, "diff": 6.6}, {"id": 28037549, "name": "봉화산 둘레길 1바퀴_반시계방향", "dist": 4.1232, "this2other": 100.0, "other2this": 100.0, "diff": 4.9}]}, {"segment_id": 14710004, "name": "SLakeCircle Start East", "users": 10666, "records": 168092, "distance": 2.652, "gradient": 0.0, "polyline": "ww}cFgqxfW?XDXd@fBlBbE`@j@Xf@d@nAH`@@n@L\\@J?JEb@@JJZb@v@j@`@NBLA\\@n@W`@]f@WLCHBHF@DD?FKFH\\fDn@i@G?IRIHs@Z_@ZCFKb@AXNrATp@P|ARfA`@dA\\vAVf@Np@^l@JJTn@z@bAZJl@Vf@CXFZArAHb@MJIHKTs@Lo@Bq@IuBQyAc@eBy@aCU}@m@yAMg@M[a@i@a@{@QKUYm@i@G?y@Ri@^OFO?KIG@MFe@eAMUKIAGJ_@HQp@e@X]Fk@?ME]I[Yu@WYUe@IY_@o@[o@KMOKy@cAg@w@_@e@OY{@cAWQUSqAm@iABYDm@VUV", "n_partners": 1, "partners": [{"id": 6884991, "name": "석촌호수 런닝코스", "dist": 2.534, "this2other": 100.0, "other2this": 100.0, "diff": 4.4}]}, {"segment_id": 7128822, "name": "Eungam 2(i)-dong, Nokbeon-dong & Hongje-dong", "users": 70, "records": 156, "distance": 1.8, "gradient": -2.5, "polyline": "ckldFwwueWE@OLAVENg@|@IDIJi@NWDKFKA]RUFm@JY@OCQKWm@a@MG?E@OPq@XSBOCc@F@FJF?FCE@GBCAD@OFb@MKEBEAu@YQOQGIA]DKAYWM[YQs@s@WGUOw@WkAWECKMOKUa@Y[S][QYYcA]_@c@e@e@S[YM[WUi@i@s@U}@]a@g@a@SY_@aBIGWMIe@KKWM[a@m@aBEU?aAK_@@]Oi@Ji@Ba@Yi@?IJk@h@m@`@URYTWNUHc@TUFQfAmARSFC\\Aj@M`Aw@ZUHS", "n_partners": 1, "partners": [{"id": 7128835, "name": "Hongje-dong, Nokbeon-dong & Eungam 2(i)-dong", "dist": 1.764, "this2other": 100.0, "other2this": 100.0, "diff": 2.0}]}, {"segment_id": 18935033, "name": "[Tom's] Rose Garden Climb to Gate", "users": 1639, "records": 2591, "distance": 1.804, "gradient": 7.4, "polyline": "eypdFafxeWZg@BQ?IFIJCb@^f@RHLPFFLVHJ@LMVCTI^NNCd@MRCZHPAJ@NJp@Pd@AJBh@CTB^Cl@ADCRNRBXEv@@LEFKPKRAJFL?RF|@KLGt@CHIHOPGDKNGJMLc@Fs@F[?qCFc@C_@F]EYH]AWCUDq@MwBKO}@We@Uq@{@_@}@CUg@i@e@Me@C_@IwAQYe@W[Wm@_@UEIQe@@WFg@Aa@EQGOc@i@CKMOBSEUFY?GOMGW@k@JMZSTUN_@@GIi@@YCc@Sc@G[a@a@i@OGE?MGUEi@@QFU", "n_partners": 1, "partners": [{"id": 18935062, "name": "[Tom's] Gate downhill to Rose Garden", "dist": 1.822, "this2other": 100.0, "other2this": 100.0, "diff": 1.0}]}, {"segment_id": 30500603, "name": "롯데은평몰 도로방향 200m 쥐어짜기 구간_DDRC crew", "users": 1202, "records": 24026, "distance": 0.208, "gradient": 3.0, "polyline": "oevdFqnseWP?TCFGTGn@@LEF@`@APIR?TIh@@BAz@A`@C", "n_partners": 1, "partners": [{"id": 39317546, "name": "은평뉴타운 롯데몰 실개천 직선주로 (남-북)_by Jake", "dist": 0.25, "this2other": 100.0, "other2this": 100.0, "diff": 16.8}]}, {"segment_id": 14931197, "name": "Bongsan Peak to Park - Eunpyeong Trail", "users": 865, "records": 1428, "distance": 3.61, "gradient": -3.7, "polyline": "qbqdFmkpeWJCfAId@Gh@Jd@CLPD@FARQHU~@u@|@_@NIjAKb@IR@b@C|@VRAf@QdAUnAGLDf@If@Cd@MH@FJn@Lf@\\NDp@l@HDP@^OT?PETBjBMf@BNAd@Kv@Yj@@l@IZDb@Nb@VRf@HRDTA`@J|ABRPh@@Tl@QROd@Ab@T^H^Df@@NEVOPWPCDEd@Lf@Kt@o@j@MZYFOHA^Q`@Kf@?fAQN@S?`@]^KFG^PlAB^Eb@FbA@VHl@Zj@PzASRKd@GjAGNKNQ^W\\EFGPEtA[TL\\`@Vp@\\h@DR\\^\\r@f@`@DLHJRLj@j@`@\\\\NTd@Pl@d@^d@HRTVLNCbA]d@GVYz@i@b@Ub@Gd@Ab@Nd@@J@FHPDPCFC`@c@DAXS`@GZ?HCJCXYj@m@L[FaAj@sARiA?EMQJe@RyARk@JMFOF]Bq@r@U`@Pf@l@f@FVHTJPT^Rn@RXTb@H`@TLDL?d@Gp@HTF|@?PQBU@a@DM", "n_partners": 1, "partners": [{"id": 39849637, "name": "SMN봉산", "dist": 6.58, "this2other": 91.8, "other2this": 98.1, "diff": 45.1}]}, {"segment_id": 7128835, "name": "Hongje-dong, Nokbeon-dong & Eungam 2(i)-dong", "users": 174, "records": 346, "distance": 1.764, "gradient": 2.5, "polyline": "msmdFsmweWKPkAbAc@PaALWVYNo@|@YRCDAn@EZi@h@_A`@_@FWCSJP\\VbA@b@Of@APXlBLjANXRt@N`@JLh@XBF@`@PLNPPn@BVBFzAfARr@LXHZf@b@HVPV\\Nb@n@Zn@JJZFVNNDRVNBHDZb@PPT`@PNVXRLTFv@R\\X^FHDr@x@TDVTb@TN@b@MPDZTj@D^?`@FJAVSv@UJAJBBD`@r@HFp@Ft@C`@M^_@r@MLG^k@^c@NWZQ", "n_partners": 1, "partners": [{"id": 7128822, "name": "Eungam 2(i)-dong, Nokbeon-dong & Hongje-dong", "dist": 1.8, "this2other": 100.0, "other2this": 100.0, "diff": 2.0}]}, {"segment_id": 20824836, "name": "서울식물원(CW#01)", "users": 1625, "records": 33522, "distance": 2.33, "gradient": -0.0, "polyline": "{hidFucceWF]Vk@Ze@`@_@VILIHANC^BZLVXNLl@J^P`@H`@NNLB?z@t@t@h@l@Rp@DFD|@Tl@\\F@ZVH@TRHBJJ`@XJ@RLN@BBB?|@eA`@u@TQfAwAh@g@HMPIHAH@HHPFVRDHVVRFL?DEVIH?^Kr@GZKR?FBHNFT`@tEAl@KdAOx@Qp@Ir@OJYDuA?IEM?QDa@@UDi@ROHWX]hAKf@EH]PSDOOISm@k@y@sAMIWc@a@a@i@_@WM[Gy@CIEWAOCq@Cs@KS?c@GM?YG[AYG[?GEc@AICY?i@Ik@CIC}@EKCS?IE_@A}@Oc@EGSCo@@kBHsC", "n_partners": 1, "partners": [{"id": 20824817, "name": "서울식물원(CCW#01)", "dist": 2.312, "this2other": 100.0, "other2this": 100.0, "diff": 0.8}]}, {"segment_id": 21694739, "name": "Inwangsan-ro Descent", "users": 1000, "records": 1887, "distance": 0.75, "gradient": -8.9, "polyline": "}xjdFqi|eWVBXAXId@YLMVc@n@_BX[VQf@Wv@[xAOZKNMZe@xA}C^m@LOb@]XMh@_@|Aa@PMb@gBdAkDFa@", "n_partners": 1, "partners": [{"id": 7989921, "name": "Climb from the cross to the pull-up bar", "dist": 0.73, "this2other": 100.0, "other2this": 100.0, "diff": 2.7}]}, {"segment_id": 18935062, "name": "[Tom's] Gate downhill to Rose Garden", "users": 2267, "records": 4890, "distance": 1.822, "gradient": -7.0, "polyline": "sjpdFgezeWLCAHIHIVGl@?p@TTRFb@VNNXr@DT?ZEPFLDZCRKRo@n@ILGl@FNB?JJA^@PCXJLDNVXXj@@TIf@GL?JDTPf@RNPVHRb@j@P`@FBd@?|@JzA\\HD`@d@DZL^Vb@NRh@b@NDFDt@JLFJTNpA?\\Il@@z@IPHb@EVFn@GXAl@Al@Dd@EZCt@Wv@KLSJI@Yd@]ASDM?c@R_@HQKe@KUHGPKFK@SCw@BGCMQ]DWAM@Q?ID}@@S?KEU@g@MWU_@HMKGCw@XU?SOYJa@@ULE@WQ[KQQa@]]e@I@IT", "n_partners": 1, "partners": [{"id": 18935033, "name": "[Tom's] Rose Garden Climb to Gate", "dist": 1.804, "this2other": 100.0, "other2this": 100.0, "diff": 1.0}]}, {"segment_id": 9685788, "name": "[휴레] 봉화산 둘레길 한 바퀴", "users": 21, "records": 73, "distance": 4.01, "gradient": 0.0, "polyline": "k}pdFqzsfWAs@@M?GQ]a@]u@SKGe@Ca@KSOi@Y[_@QYGU{@_@Ni@IQe@Mu@qAQUg@@DBFUBwATc@ZKfAd@TLd@Fd@?NCZcAVa@t@Db@E?w@BOHGZo@NQBo@IOC@Gg@HYb@Ab@Eb@MVe@J_@He@X[\\MX_@Tg@z@k@DIHk@Ii@_@UeAYIQg@S[u@o@ZWI]DYd@c@C]Sc@KUHw@IYc@c@cAL_@ZQBEVwACSd@Y`@c@x@k@d@PRA`@[H]MwA@CVURGb@CPuA\\GZM?SBMNWx@k@b@D\\ZMh@El@Jh@Bd@Pf@DRd@HBJBZFJ`AJNTH@\\Xl@NBl@CV_@ZMh@GPCTPD\\THBd@d@n@fBx@T\\PHQNMALTp@Zd@JBVMF?ND^VfAIn@R\\TPTNJJb@CN?JXTt@~@PdBK\\ORAJTn@R`@Gh@KRAXF@RNHLFbASh@NIF@JrAINq@Ja@I[OeAhACHML]LG@m@c@K?UXI^a@d@APKHUd@KLa@PAf@ZbAs@h@OTe@@EBYp@e@d@q@G_@Xs@Bc@Xg@?aAL[Yw@x@g@JKGAGUc@e@Ce@@e@JUI", "n_partners": 2, "partners": [{"id": 26182386, "name": "Bonghwasan Counterclockwise", "dist": 3.92, "this2other": 100.0, "other2this": 100.0, "diff": 2.2}, {"id": 28037549, "name": "봉화산 둘레길 1바퀴_반시계방향", "dist": 4.1232, "this2other": 100.0, "other2this": 100.0, "diff": 2.7}]}, {"segment_id": 40667936, "name": "상계교_창동교 서편 by psw", "users": 2634, "records": 14168, "distance": 1.03, "gradient": -0.3, "polyline": "kyzdFosmfWjA@d@@lBITCf@Qj@[|@Wb@WXIl@_@fBs@~Ak@^I`@Q|@g@r@e@`Ai@x@g@d@Ur@UPAT?pCi@dAWbAOXBj@Al@BnABp@?VBd@AXEFB", "n_partners": 1, "partners": [{"id": 40581609, "name": "창동교_상계교 서편 by psw", "dist": 1.09, "this2other": 100.0, "other2this": 97.0, "diff": 5.5}]}, {"segment_id": 5847849, "name": "Loop run", "users": 55, "records": 102, "distance": 5.56, "gradient": 0.0, "polyline": "wh_dFwileWCFDDOFO?aAI_A@kBCmAFg@AMCkAu@YOw@Gc@D[SS?eBUy@[g@YUCi@[[KQM}BoC{AgC]}@WaAGc@a@oAMq@U_@MMUKIMCWFiAC_@_@_BSiA_@_BSi@m@w@aA_BgByAQIUCcAC_@K[Ou@k@qAqASMeAw@YOc@O[G}Bw@c@ImAa@{@Ue@C[Ii@Gg@A[@o@Cm@@_@JuAHoAWcAe@s@Sg@BWLe@DMDWLUPo@V_Aj@}Ad@g@TMLCPD^Np@V|@F`@Lb@Hv@h@fBFHFBHCXUbDkB~BiA`Ak@xA]z@Ef@@x@JhA^pAh@d@XfA\\t@Zn@Pf@\\bAb@j@JNN|@j@x@Xj@VDANLZLZRd@^`@d@Zf@nAlDVbAVt@XfAz@pCd@lDAlCS|CBZNp@DDHCJDf@b@\\Tf@Lz@XvAn@HFVLJRX|ADH`@V\\\\~AlAZ\\LHzA\\L?l@JR?DCFM`@[RE`@_@r@e@VEj@?v@MlAW`@Mp@KfACjA@f@IzADf@HpADj@A`@Kp@@f@EpADjBHhABDEDU@s@Da@?mAIu@GuAE[GOSSKEyB@OCe@AOCm@?", "n_partners": 1, "partners": [{"id": 16368802, "name": "Clockwise Loop", "dist": 5.63, "this2other": 94.9, "other2this": 94.7, "diff": 1.2}]}, {"segment_id": 14412611, "name": "Around Noeul and Haneul Park", "users": 3239, "records": 26868, "distance": 5.892, "gradient": -0.0, "polyline": "aajdFghleWKJ_@Tg@v@UNq@n@eBzBSb@]rAU`@APGLuAhBa@j@OZIJW~@ONELCT?\\Mj@B`@Er@J|@AVTjDR`AR^Pr@ZdAPXd@bBBVHZAVFh@Hf@HXRrAHVBh@Jd@Hn@BhARlEJt@\\|AJRVXHPXP^d@\\p@^d@\\P\\`@^Vv@`@RDXBPINMJM@IHMd@e@HYV[P[^g@FQNSJ]\\c@^}@Zc@hAeCNg@PUN[b@o@DSj@cAVs@h@u@\\cAXa@`CiFXa@P[Ne@V_@^eA\\w@RUZkAR[Vq@|@wAHUn@aAHUhA_BXs@@c@Ts@NQJg@FMd@e@Ja@N]X_@HSF[RSVOJQJ[|@_BPo@Vi@^e@P]Jc@h@sAV[Nc@b@q@DOT]FWVc@v@kAHYRe@LOV{@N]TYVq@b@e@Lu@j@gARo@LOXm@LILUZ]`@s@FW`@m@DWJQXu@Lw@rC}EJs@@QEq@K[Ye@OO{@m@SSKSUUm@[_Bi@GE_@g@WQi@m@g@c@MQICkAwAYQa@_@]i@MKMWUWUKQ?QFWNWJc@VON[Tq@Zo@f@iA`@]Vm@\\_@Zg@R_Af@a@^}@f@SNWHMJQXM\\QXSd@c@l@i@bAUPe@n@c@`ASv@Iv@M`@EVM\\_@h@k@fByAjBcAdBo@d@o@Xq@LMLQZOJ[^UREHAVDx@CXk@n@IXSf@}@x@_@l@UVELc@f@g@fAi@l@KVONKRQP]l@WZ", "n_partners": 1, "partners": [{"id": 25604141, "name": "하늘공원+노을공원 둘레 1바퀴", "dist": 5.881, "this2other": 100.0, "other2this": 100.0, "diff": 0.2}]}, {"segment_id": 21788484, "name": "안양천(철산대교to광명대교)", "users": 7009, "records": 37538, "distance": 0.98, "gradient": 0.3, "polyline": "iovcFmxkeWmEjCaBp@w@b@SDOHQNwB`A[JK@e@PC?q@^a@La@ToBr@}@b@[Fg@NS@g@TaBj@_@Ro@Pm@Vi@LWLuAVw@Z]Hg@RIDsA\\", "n_partners": 1, "partners": [{"id": 21788497, "name": "안양천(광명대교to철산대교)", "dist": 0.96, "this2other": 100.0, "other2this": 95.1, "diff": 2.0}]}, {"segment_id": 28298058, "name": "목감천한바퀴 by 뚜비형", "users": 97, "records": 493, "distance": 8.3, "gradient": 0.0, "polyline": "wqwcFctfeWKeA?q@Es@e@uAQ[]a@q@i@e@{@iAeB]YoDwAsAm@kBo@YOMG]_@c@q@e@yAKu@Ee@Mo@@uAEm@I][k@?Ke@{@]a@g@g@kA{@o@o@YSgC}BmEkDaCaCk@c@_C}BQ[Qg@Si@CSSqA@YWaC[sBu@aBiAoBaAsAeBoBWSAIB?FRp@dA^v@x@n@d@l@z@vAt@xATv@Ll@RpBCf@B`@VdBNh@\\|@V`@`AlArAjA\\Vl@j@^Xj@f@lAz@tHvGp@f@d@ZXXl@f@Z\\d@~@N`@Jb@JzAA`@I^@r@`@~Af@fAZ`@ZXl@\\tFxBjCnANJlA|Az@tAd@`@^l@\\`ANpAF|@C~ADdAMvBUl@_@pBOj@ILIl@Ur@K~ADp@Lj@h@tA?Hv@fATLRZfAv@f@Nl@DjDJpHXj@Ht@Dr@Hn@An@Nf@@FCf@@~@Hf@HjA@ZB^?ZB\\ArBLpANp@DtALjGTlAHx@?pBj@lAXhAPh@RjAz@xAnAbAhAn@d@tA~Af@ZV\\x@x@t@j@f@Nj@JZDb@AIG]E{@Oe@MUOk@a@mAkAYa@cBcB_@[KE_@a@mBgBg@a@_Am@u@Y}Ce@UJI@MGID_@Sc@QuBYeAEk@?oAOiBOg@?sBSQCOBs@CkIq@i@ASEsACeCSe@Aq@?{AQs@@sAGcDGg@@{@G{@UOIs@m@i@o@Oa@Mm@Sm@Oo@IiAFeB\\iAPsAn@kCNsDKkA", "n_partners": 1, "partners": [{"id": 17347817, "name": "목감천10k run", "dist": 10.01, "this2other": 100.0, "other2this": 100.0, "diff": 17.1}]}, {"segment_id": 7455053, "name": "[휴레] 중랑TT Part 1", "users": 3807, "records": 33409, "distance": 2.3718000000000004, "gradient": -0.3, "polyline": "enqdF{wqfWz@GhBCpBKtGMvB@jAIhEOvBCpAGfFq@f@Bf@A|Dk@rBa@dEo@pBWd@I`@Ob@GzB@h@@f@HfAj@lAHf@Hf@Nb@ThBfA~@p@xDtD|@t@z@dAz@p@`@T`APjA^hAPjADd@?nAKj@?d@Df@ApAM~Dk@d@O", "n_partners": 1, "partners": [{"id": 7455059, "name": "[휴레] 중랑TT Part 2", "dist": 2.392, "this2other": 100.0, "other2this": 100.0, "diff": 0.8}]}, {"segment_id": 21490001, "name": "YNRA_Pureun Loop", "users": 144, "records": 1788, "distance": 1.3, "gradient": 0.1, "polyline": "udxcFmhaeWN_A?[He@\\eAF_@COEEAIq@}BWQYi@w@}B_@a@m@_@@ITg@X_@ZGZ\\p@bAVh@p@z@N^Nz@VJz@pARd@TVp@j@`@NZXn@x@Vd@?Ja@b@Qb@XrA@BE@AP@RFTIh@GFMDqAv@e@Ly@b@c@Ng@DGAQ[o@oBIk@He@CCKCEIHm@T_A", "n_partners": 1, "partners": [{"id": 21490050, "name": "YNRA_Pureun Loop A", "dist": 1.3, "this2other": 100.0, "other2this": 100.0, "diff": 0.0}]}, {"segment_id": 21788497, "name": "안양천(광명대교to철산대교)", "users": 6081, "records": 40160, "distance": 0.96, "gradient": -0.3, "polyline": "abxcFa_keWVGd@SnAa@b@ILGXCZ@JCRKbA]TCb@Qr@OTMLCVSl@Ut@OpB}@ZMXGXQlBw@PMP?`@OREXO`A]^Kv@]xA}@tAo@RQVOfBw@JMn@e@z@e@CB", "n_partners": 1, "partners": [{"id": 21788484, "name": "안양천(철산대교to광명대교)", "dist": 0.98, "this2other": 95.1, "other2this": 100.0, "diff": 2.0}]}, {"segment_id": 7455059, "name": "[휴레] 중랑TT Part 2", "users": 3831, "records": 33673, "distance": 2.392, "gradient": 0.3, "polyline": "inmdFanqfWoBf@qCn@i@Hc@BkA@i@EwBAg@Ki@EqAW}@YoAWaBsAYe@[_@uFiF_@WeBeAeAc@iAQgA[c@Ye@Mi@Ai@CoB?c@DiA`@iANoBb@{Cb@yA\\_El@c@Bg@Ge@@yCZsBNiEHsCNmA@c@CgHTc@CgABeAHyBAc@B", "n_partners": 1, "partners": [{"id": 7455053, "name": "[휴레] 중랑TT Part 1", "dist": 2.3718000000000004, "this2other": 100.0, "other2this": 100.0, "diff": 0.8}]}, {"segment_id": 25882455, "name": "우이천 근화교(덕성여대 앞) ~ 우이교", "users": 1252, "records": 14131, "distance": 2.05, "gradient": -0.5, "polyline": "ayxdFooffWFCH?h@L\\@|@Ab@Hp@BNAz@[`@S\\CN@\\o@h@{@Rk@D]?SLSH_@Hq@NYH_@HMPo@J{@JYNeBC_DQcAm@cCC_@ESAe@WmACo@NkATw@Nq@JQPMLQPQr@[n@uAXy@Fo@DS@c@Rk@D[O_Bg@_@R}@Xg@TWh@O\\Cb@MRAf@S\\Eh@i@|@]NMXe@h@mAj@}@\\{@\\aAFe@Pg@Fa@RUZo@Va@v@s@HW\\[Zc@Ri@LKVi@V_@`@gApAkCVg@RIHM", "n_partners": 1, "partners": [{"id": 25882506, "name": "우이천 우이교 ~ 근화교(덕성여대 앞)", "dist": 1.99, "this2other": 100.0, "other2this": 100.0, "diff": 2.9}]}, {"segment_id": 14700901, "name": "빅토뤼아Loop", "users": 75, "records": 226, "distance": 10.02, "gradient": -0.0, "polyline": "_~_dFy`leWUDWLgAlASNMFOBWCgB_@UKSOcCqBo@g@OYY}AMQa@SaBk@_@Ie@GSGWOYYQYUi@I[EY?k@LoC@y@ImAQqAg@sBsCsJq@gBQ[UUo@e@y@_@}@g@]KwAw@cA]qAk@cFqBaBi@aAU{@K}@?w@Jm@RcFbCqCxAmA`AqGlD_An@iAd@iDfAkC`AqAb@kBf@_CdA[Vy@dA[VcAj@cDpB{BhAu@h@c@b@kAzAqAjB{@|@e@Zo@x@w@x@[d@k@h@o@^_Ap@_Af@_Ar@mAt@u@n@m@ViAv@uAp@_@ZcBhAaFjD_Ad@mAx@QLa@h@I@a@K_@CUDm@\\G?CGPuAr@mEb@wBLYTIp@CrAML?VDLAxBw@nAo@d@]d@Ot@a@pAm@rJqFf@[bAiAN_@JuA`@e@x@}A`AgDdAkCz@mBpBqFr@kATYTU^Sr@Ql@G`AA`@I~@g@pCkAzB{@rBaAlGkCn@]hAc@b@U^GfF{BvHyCnBaAlDwAf@O\\E~BOh@Al@@lBLbB^nBp@hAn@dAt@nCdBh@`@n@\\VJx@FTHHP^^tDjChBzAZb@dAhBVh@Pd@rAbFZxARjAPj@|@~Dl@fBl@jA\\d@jClC^Zl@\\rAp@p@T`BZv@HxAGx@KpCU`AI`@A`BQlCSxAGn@@tAR~B@PFPTH^FjAN|@E|CCVEJiAGgDEqA?yAHa@?[AmAOmBC_B?aADm@HiAXu@Nw@Js@BYFc@X}ApA_@T", "n_partners": 2, "partners": [{"id": 19495819, "name": "[10k]신정교_안합_신정교_반시계", "dist": 10.06, "this2other": 98.2, "other2this": 91.6, "diff": 0.4}, {"id": 25745281, "name": "안합-신정교 반시계", "dist": 9.91, "this2other": 94.7, "other2this": 95.6, "diff": 1.1}]}, {"segment_id": 30528360, "name": "꽃향기 basic course", "users": 73, "records": 1197, "distance": 4.1326, "gradient": 0.0, "polyline": "wzodFyxneWjAoBDPHHRHNBvADzA?bBBXCF@NLlAn@d@Nd@Hb@Pd@Lh@Bh@CjAJnAEd@Fj@Mh@Gf@@f@Bb@Pb@VlAlBt@bAdBpCjClDb@VtAZ`@PPBd@NzAl@ZZKNd@VTf@~@v@x@bA~BrA\\\\r@hAMn@Er@Dr@Rf@NRG_@HBTj@XzAPl@X`@v@|@hChBlAl@z@p@z@x@Zb@|@`BZ`@L\\[^WHIGaBwC}@}@_@Y}AcAeAk@aBeAc@Y[]Yg@qAiDKg@f@XB?Wi@KYMsAQq@Mm@Sc@gAm@eAu@[][e@o@sA[e@SSa@WsC}@uBi@KKy@}@gByBkBqC[_@Ue@Wa@m@mA_@[q@Ww@KiAAy@FmADoA?g@Ie@OgAQmA]a@Uc@Ic@Mk@Ac@BoAEi@?c@Ag@Ge@@c@Ee@@q@A", "n_partners": 1, "partners": [{"id": 30522012, "name": "꽃향기 런", "dist": 4.7, "this2other": 100.0, "other2this": 93.3, "diff": 12.1}]}, {"segment_id": 8231277, "name": "The Descent", "users": 7189, "records": 23376, "distance": 1.77, "gradient": -5.7, "polyline": "m_edFkdbfWIXe@hAf@mBNU|@aA`A{@VOTKVEX@dAOzDiAj@AVDx@d@NNPHf@Ll@DREPUNu@HUNY^]NUJUD]bA}DR}AL]^_@bAWRITONSHs@C[KUs@}@e@e@UQe@c@_@m@QQUIYIWOQW_@y@OOiAIq@OUSc@o@o@Uo@Gm@B[Fi@Tm@Pq@PUBo@RaB\\{Af@WCSYUUUGo@C", "n_partners": 1, "partners": [{"id": 7440088, "name": "[휴레] 남산업힐(약수터->버스정류장)", "dist": 1.771, "this2other": 98.6, "other2this": 96.4, "diff": 0.1}]}, {"segment_id": 38159215, "name": "삼육대 트랙 1km", "users": 60, "records": 1284, "distance": 1.0048, "gradient": -0.2, "polyline": "a{vdFoqxfWNDx@Od@MLQ?[Qm@]yCMMU@_Bb@IRFZNl@Z|BJZ|@Ex@WDUCYMk@]sCMQQ@e@Rg@FSHIXLn@h@jDNJ~@Ob@QLMBW[{AA[YaBSGsA^QFIV", "n_partners": 3, "partners": [{"id": 21610694, "name": "삼육대 트랙", "dist": 0.8703, "this2other": 100.0, "other2this": 100.0, "diff": 13.4}, {"id": 21884653, "name": "삼육대 트랙(@y0_hee)", "dist": 0.75, "this2other": 100.0, "other2this": 100.0, "diff": 25.4}, {"id": 38159226, "name": "삼육대 트랙 1mi", "dist": 1.6225, "this2other": 100.0, "other2this": 100.0, "diff": 38.1}]}, {"segment_id": 24298355, "name": "중랑천 뚝방길 (장안교 방향)", "users": 347, "records": 3486, "distance": 1.23, "gradient": -0.3, "polyline": "o_mdF_vqfWnBk@f@Ir@KzAApAUd@Qx@a@b@OtBsAPQj@]|@q@j@i@fByA\\]X_@`CgBdAk@~AmA`Am@z@o@\\]lA_A\\_@x@i@`@_@bAw@tAqAnA_A^c@h@O", "n_partners": 1, "partners": [{"id": 24298469, "name": "중랑천 뚝방길 (중랑교 방향)", "dist": 1.2, "this2other": 96.9, "other2this": 100.0, "diff": 2.4}]}, {"segment_id": 18377077, "name": "광진교(남->북)", "users": 2775, "records": 10675, "distance": 0.89, "gradient": 0.2, "polyline": "orcdFq{zfWQrAa@pAIbAi@jBKl@Gl@a@fAUtAa@hBIn@EFC^WnAObAkA`Fe@~AKr@Oj@UvASj@S|Ak@jBU|AQf@Mj@", "n_partners": 1, "partners": [{"id": 13232366, "name": "광진교(북->남)", "dist": 0.95, "this2other": 100.0, "other2this": 100.0, "diff": 6.3}]}, {"segment_id": 38159226, "name": "삼육대 트랙 1mi", "users": 45, "records": 849, "distance": 1.6225, "gradient": -0.1, "polyline": "a{vdFoqxfWNDx@Od@MLQ?[Qm@]yCMMU@_Bb@IRFZNl@Z|BJZ|@Ex@WDUCYMk@W}BEUMQQ@e@Rg@FSHIXLn@h@jDNJrAWNILMBW[{AA[YaBSGsA^QFIVt@zENLRERIz@SNWEm@Oq@[_CQMQ@SJg@JSHOLAXNp@^nCFRRHd@Sx@OJQ?WUkAIq@", "n_partners": 2, "partners": [{"id": 21610694, "name": "삼육대 트랙", "dist": 0.8703, "this2other": 100.0, "other2this": 100.0, "diff": 46.4}, {"id": 38159215, "name": "삼육대 트랙 1km", "dist": 1.0048, "this2other": 100.0, "other2this": 100.0, "diff": 38.1}]}, {"segment_id": 25745281, "name": "안합-신정교 반시계", "users": 18, "records": 47, "distance": 9.91, "gradient": 0.0, "polyline": "svedFwykeWQx@}AjJ@JD@|@]ZB\\GV]f@[`DgBpB{AzE_DhAo@|FsDrBiA`BgAp@g@v@y@D?RQhBiB\\g@p@s@hBaCjByB`@]lFwCpBmA`@YrAyAjAw@p@YtMmErCkA|C_B|CgBvAiAhBcA`Bq@|A{@`Aa@|@Wt@If@BxARhA\\fBp@jB`AhAf@nDnAjAr@pChAd@Vj@p@d@bAtAjEPt@b@rA^vA`@lBRhBBdAOjD?r@R|@`@t@^b@d@VvBh@d@Rp@\\FLNv@Nl@JLzCfCbAt@d@Tl@Nb@HPAb@UhBgBd@OzBQl@M`Be@fACp@BlDD~BLnBStB?j@D`BAl@BNCBEDoC?i@Qy@Co@AgCIWEA{@Ae@Fo@DMDa@TODeBIe@@sD\\}@D_F^g@@kBPw@@MLE?Q?{Bc@mBy@kAk@o@e@c@a@kBaCs@mAWk@_@oAcAmEa@wBk@wBo@}C_@{@iAkBq@cAiAgAc@Ym@_@qCuB[OGADHc@QcGuDqAaAiAs@wAm@mA]k@IiAIgBEsCT[De@Lk@XWFsCbAiAj@{Ab@}Av@c@R}FpBi@VWHaAd@a@Xo@VeAZm@Te@NgBt@{At@uCbAw@TgAh@i@`@c@Vu@Re@R_@BaAEO@iAb@m@h@a@h@[l@s@fBi@fBiArCOn@{@zBiAtDi@bAEBAJORIB?CC@@BEJEf@CRIP_BjBe@`@STe@ZaAb@s@^eChAk@\\k@Vw@`@q@b@WHoAr@MLe@Xs@Xo@L}BNwAPSL", "n_partners": 2, "partners": [{"id": 14700901, "name": "빅토뤼아Loop", "dist": 10.02, "this2other": 95.6, "other2this": 94.7, "diff": 1.1}, {"id": 19495819, "name": "[10k]신정교_안합_신정교_반시계", "dist": 10.06, "this2other": 97.8, "other2this": 91.1, "diff": 1.5}]}, {"segment_id": 21490050, "name": "YNRA_Pureun Loop A", "users": 192, "records": 4186, "distance": 1.3, "gradient": 0.2, "polyline": "sdxcFigaeWCFEZDHRD@LIZ?Xf@rBHRb@J\\EVKb@]VMj@IZKTU`@QNMBKCaA@YKg@IOE_@FSl@i@BIaAaBm@a@_@M_@c@Y_@q@oAKWo@m@Gg@KW{BaDc@c@a@PW`@MV?FXHJ@b@\\Rl@TfAb@lAXNDFHl@f@|A?l@Ut@C\\MV?f@Mj@G~@?LTF", "n_partners": 1, "partners": [{"id": 21490001, "name": "YNRA_Pureun Loop", "dist": 1.3, "this2other": 100.0, "other2this": 100.0, "diff": 0.0}]}, {"segment_id": 26692997, "name": "북한산둘레길2 (신축계단길) ", "users": 1216, "records": 2218, "distance": 2.22, "gradient": -3.1, "polyline": "y_wdFqcdfWBNTr@H`@@XE^If@GLQLAFKNEF_@@?@KQc@SQ[Mo@Ew@c@?UGW[WOYYY_AAODy@Gk@IWGG]IOKODI?[UYOKK]GGFEXOXGTEDWPKRGXBX?`@Mb@EDG?QGQKI[Ue@KIEOKmAO}@EESFISa@k@c@OMKMEm@HKNQHORu@QYC_@@G@GHKFGJCDEAOFMFKNSJADKH[D_@TMBGDKBALDPEFIBYBGJAC_@NAACUDa@Cg@[eACc@Ds@Ec@_@YCk@SWAG@k@Lk@AEG?AA?u@Kw@Du@Xq@GWQOIQMCGESUGW]WI_@C[Ic@Qc@Ge@?EFMFc@@]HWBm@JOHq@Em@QQE[P]HY?q@a@CKIEk@MMIQe@?KRSHG?IIg@cAq@gBQ[e@kA", "n_partners": 1, "partners": [{"id": 21090737, "name": "북한산 둘레길 2코스 / Bukhansan Trail #2", "dist": 2.334, "this2other": 99.4, "other2this": 96.6, "diff": 4.9}]}, {"segment_id": 21075336, "name": "미성아파트 산책로", "users": 88, "records": 3206, "distance": 0.58, "gradient": 0.1, "polyline": "wcrdFoxpfWGDG@a@RKHYFSHYBe@JuAl@MNQH_@HwAQqAUYIy@IqAQc@FaA`@YDg@Bu@XGFQJa@Hi@V", "n_partners": 1, "partners": [{"id": 21075363, "name": "미성아파트 산책로 리버스", "dist": 0.634, "this2other": 100.0, "other2this": 100.0, "diff": 8.5}]}, {"segment_id": 11272585, "name": "Seonjeongneung Park counterclockwise", "users": 1083, "records": 9002, "distance": 2.04, "gradient": 0.0, "polyline": "i_}cFcjlfW~@e@pAuATON[d@_@TYrA{B\\{@f@aAHSBUN]DqAPuBBMNM@KFoAAyBJ{BC}BEsB?oAEs@iAuEYu@[o@c@YUGO@YHi@XSB_@Za@`@sAbBk@l@{@fAGH[JG@EEIFQZ{CjDIFMD]XUZIXHb@DfAHNHv@RvA`@vBLV@TTnAD^@p@JRJHLPAp@Nv@?^d@fATbAVr@P|@Ph@PXThAX`@", "n_partners": 2, "partners": [{"id": 1237484, "name": "Seoul Korea Park Run", "dist": 1.992, "this2other": 100.0, "other2this": 100.0, "diff": 2.4}, {"id": 20377755, "name": "Seonjeongneung CW", "dist": 1.98, "this2other": 98.7, "other2this": 100.0, "diff": 2.9}]}, {"segment_id": 19478921, "name": "북한산 자락길 (완전 개통)", "users": 66, "records": 251, "distance": 4.062, "gradient": -0.6, "polyline": "owmdFmoxeWo@LMCMOGQG?DNJBSJMME?Jb@Uc@SDSESSKB`@\\JPALDf@SRUGKDHC?Ee@Sm@]UGQLM?QEYP]?UKUU]GQ?KDGLk@d@O^Op@SPSM_@[OCKBIJK@IBw@dAMX?NMb@_@\\SZIFK?a@KMIOE]CMB[IOWQc@ESOWGGM@GFKXQPIBWBo@M]OM?KFGHCJ@LGTINKA][KEIC_@Ea@MSSEMB}BCQ[Wk@Og@HAIF_@?a@TaBA_@M[QIKAUQGMEQOYy@[QYKGUWKGUEGGCIL[PULa@Cs@_@_AIKGEoBc@UFk@g@]EUHK[?UJu@?UEUQQI_@OYMASKWEYJSBIYQWQKMBIEM@MDICKMKEA]De@Co@Ps@@a@K_@]SYKQ[MGQWWGKMDUPc@HKNYTcAC[a@q@?It@a@V_@TQ\\OFG@O\\iADWHQ~@JVCVKREL@JILCDFFp@FLHF\\BRILAH@PH\\^RNTBFQTYFMD]Us@DM?aALQVSf@O\\FJT^`@NGTPZLJAJBRMZCTLFHr@JPJVAXDj@`@j@P^EZ?ZGZ}@NILHT\\HHN@NAJIXIVMTUHMFk@NAPNTJVAXTVVVNJ@LAJHZ@p@MLBj@f@n@Dj@?TJRCTDTPt@A`@WR[?c@IUOQFGCMDBJRJ@AORSMAM[HHHBKMGSJBXb@ESKSAQ", "n_partners": 1, "partners": [{"id": 19323852, "name": "북한산자락길 (부분 개통)", "dist": 4.0526, "this2other": 100.0, "other2this": 100.0, "diff": 0.2}]}, {"segment_id": 19495819, "name": "[10k]신정교_안합_신정교_반시계", "users": 132, "records": 260, "distance": 10.06, "gradient": -0.0, "polyline": "mm~cFupleWu@I}@ScACw@H_@?IBuABiCRo@?KBk@TYFqA?OBu@AkABsAP]?w@Jw@Bc@DQ?kD\\[@m@LM@]AKEEBCCm@H[KYMq@S[EWOwAk@YSUWc@]c@o@i@i@a@s@c@i@g@cAWu@Km@AYKy@g@mAQo@e@aAc@_BIc@MYu@gCGc@g@}@Si@q@aAYg@aAiAu@k@q@[a@_@WKUSc@Yy@u@SAGDOAU@Ye@YYo@Yq@c@m@e@o@]qAcA]U{@_@k@SUOaAQe@MeC]yBFq@F_@GUDY?e@Ne@DEDWBu@b@qAh@IJ}@\\y@N{@`@OBIFqCnAe@Z}@^c@R}@f@EFm@JWHQGQLQDg@Tk@LMFKJSJM@_Ah@_Bp@[FMFc@RSPyAn@g@X{DdBcA\\QJeA^gABQAg@Fg@LKDYZo@bASh@s@nAK\\s@fBc@t@k@xAQVYv@o@|A_@tAKp@Uh@Uz@?FWb@IXAPa@x@MFe@d@QVw@l@}CzAwBrAUX_@RMZMHI@[Nw@Lg@POJ]J{@b@SFc@Z]J[Ty@b@i@ESBQ@MGKPSLm@@_@CQBEHKX]jBIp@GPStA_@tAIl@BNHBHALENM@C\\WD@RNP@l@YNO`@IROdAc@f@]\\K`@]l@W`@]p@e@hAq@jAeAP]^_@ZKPEt@C\\IHKJEd@]d@Eh@Yh@c@XOVSTUPYZSFINKX_@j@i@vAgA`@k@LITYl@g@PKdAkAd@w@p@{@Rc@`@c@FO|@aATQXOdCcA~@c@n@c@TYlBcAp@w@bAaAd@QXQvAe@ZGp@[vA]tAm@z@U~As@REt@[|Ai@b@WLOx@k@`@Qh@_@b@QjAu@ZOl@i@ZMFIp@[FG^Gr@Yn@a@fCsAx@WZE\\A~@ClALzA\\r@Tx@\\f@Nr@\\f@Z`AVb@P~@b@^TTTt@\\PLL@NGXDj@d@XPp@l@j@z@Tl@^fBVh@Hb@t@~Bn@fCVx@XnBHjBGhBEb@?v@Nx@JV^p@l@h@^Jh@D`ATdAd@FHFLPz@Rl@p@n@f@\\rApAVLRPv@d@d@Rv@JZKhAy@TWh@]z@[J@LNNEfAGb@ORE\\?d@KZFPAbBUh@@bBIX?XDr@DLDNDdAAPGb@LvBOrA`@\\B\\GN@JDd@@FANM\\Ed@?FE\\@RAl@RZANF", "n_partners": 2, "partners": [{"id": 14700901, "name": "빅토뤼아Loop", "dist": 10.02, "this2other": 91.6, "other2this": 98.2, "diff": 0.4}, {"id": 25745281, "name": "안합-신정교 반시계", "dist": 9.91, "this2other": 91.1, "other2this": 97.8, "diff": 1.5}]}, {"segment_id": 25882506, "name": "우이천 우이교 ~ 근화교(덕성여대 앞)", "users": 1149, "records": 12012, "distance": 1.99, "gradient": 0.6, "polyline": "ccwdFaxifWWd@@^ELORc@^aAbBa@`@]r@_@jA]v@W`@g@d@SXE\\ORKTs@jAKf@[t@On@Qb@Wb@sAzCo@t@[Xy@XQ@ICK@OL[L[Z_@XU^[p@S`AKdCGh@Q~@IREp@Wj@o@j@a@Va@^_@f@m@vAG`@A`@Gt@?n@Hv@PhATh@Lf@XjCAfCD`AEjAG`@Kf@C`Aa@|ACb@Sn@Iv@K\\MP[Tu@R}@b@q@Rw@HeA@k@EiAW", "n_partners": 1, "partners": [{"id": 25882455, "name": "우이천 근화교(덕성여대 앞) ~ 우이교", "dist": 2.05, "this2other": 100.0, "other2this": 100.0, "diff": 2.9}]}, {"segment_id": 26665360, "name": "Dosin-ro 9-gil down", "users": 89, "records": 949, "distance": 0.37, "gradient": -0.8, "polyline": "_v|cFgdoeWVi@RWFa@RUf@]l@w@~@cA`@Yb@K`@URAZKXOPOTEj@e@TGXW", "n_partners": 1, "partners": [{"id": 26653817, "name": "Dosin-ro 9-gil", "dist": 0.373, "this2other": 100.0, "other2this": 100.0, "diff": 0.8}]}, {"segment_id": 13378457, "name": "여의도LSD코스-8Km", "users": 2123, "records": 6343, "distance": 8.2, "gradient": 0.0, "polyline": "_wadFkareWEn@Ml@UZViBLQb@Ax@Hd@GjAYZMjAi@d@Gd@Mn@_@@Yr@BpBA`BGzCa@vCi@tCw@jBc@b@Sb@MfAk@^]`@Od@G`@QbAu@lDqB`Aw@`Ai@jCmAjC_BbBiAjDsCb@Sf@Mj@BV_@Ni@~AmAp@w@^]r@_AbAuBZ{@Ve@tAwEPi@p@_CJo@b@sALk@x@aCjA{Eb@sATgAp@eCh@iCJm@f@aHJo@Fq@?m@N}AZuI@q@GwC?eBIqCCo@g@sFEq@SwAO}Aq@mFa@wDkAeIMm@Wg@m@kCEe@?_@WaBM}Aa@}CSe@U_A@s@F]L_@F`@Ap@GV[ZgAf@c@LwBRa@?oAHq@GYHg@Ce@BgAd@[\\c@N[b@]X]\\Wb@uAdBy@~@a@\\oAfB{AzA_Aj@]\\s@fAaAtBw@hAw@`Ay@v@eBdA_Ap@_@\\_@`@s@`Aq@jA_AzBa@nA]x@oAbBuAxA_A|@a@VgB`AaAn@}@t@]`@]XUf@In@RzAZxAHp@@l@Gl@e@tAi@nAcArBoAhDWf@Qj@Wb@_@^cDjCs@jASj@On@YjCMh@c@tAUd@Qh@Ml@Gp@UzAc@vASbBIpCK~AIp@[|AS~AK`EIp@Ol@a@pAIl@Gp@Cr@@`BHxAPxA^tAb@vAh@nANzALl@`@tATf@Zb@^^Vb@Nj@Bn@OlCIn@Qh@", "n_partners": 2, "partners": [{"id": 11423749, "name": "[여의도]8K_2주차장기준한바퀴@ddamdo", "dist": 8.22, "this2other": 98.5, "other2this": 96.6, "diff": 0.2}, {"id": 15776404, "name": "여의도 8.2km", "dist": 8.151, "this2other": 96.6, "other2this": 98.9, "diff": 0.6}]}, {"segment_id": 5422492, "name": "여의도공원 (Start/Finish @ Entrance #12)", "users": 12055, "records": 201854, "distance": 2.49, "gradient": 0.1, "polyline": "kj`dFkyteWOc@Gm@IYIQUWc@y@QKUUc@gAGYk@cAO_@Su@Q_@W_@s@a@KM]o@Kg@[m@[_@]QKAi@F_@RQPU`@CTAh@LdBJn@\\nAXb@VR\\d@VPd@h@~AdC\\t@Z`BJXb@p@RVXTr@|@z@xAHPR`ANf@f@v@n@j@RXHTZlALVR\\LNXl@d@l@Pl@BDBLVZf@v@P^`@nAT`@l@p@Zj@|@lBNTRLl@LJA\\QLO\\[NWNw@B[CS[i@GSi@eAUq@Ga@o@yAIGu@oASQa@i@i@{@MYWs@[k@KYi@}@Sk@]k@Y{@IMs@y@mAgCKKg@s@", "n_partners": 2, "partners": [{"id": 6471711, "name": "여의도공원 산책로 트랙", "dist": 2.514, "this2other": 100.0, "other2this": 100.0, "diff": 1.0}, {"id": 8584198, "name": "여의도공원 Conrad Entry", "dist": 2.662, "this2other": 97.2, "other2this": 96.2, "diff": 6.5}]}, {"segment_id": 21075363, "name": "미성아파트 산책로 리버스", "users": 79, "records": 3176, "distance": 0.634, "gradient": -0.1, "polyline": "ybsdFwqpfWEBXGHKF?VUPGJEF@FIF?JEJ?XS?EdAa@n@Mb@@`@RbABp@Nv@?TFjBT`A]XQb@Mf@IZ?HELBFAXQn@k@H?NIPC\\EN@?G", "n_partners": 1, "partners": [{"id": 21075336, "name": "미성아파트 산책로", "dist": 0.58, "this2other": 100.0, "other2this": 100.0, "diff": 8.5}]}, {"segment_id": 917413, "name": "용산동2가 산1 3 Climb", "users": 5026, "records": 14943, "distance": 1.09, "gradient": 11.7, "polyline": "wledFye`fW?WPq@\\y@f@w@TWnAmDRYTKh@o@j@iAT]pAX`@DREVQd@}@RU\\k@rAiCRUn@]PATKRSF]?_@Aa@K[OSUO[BmAT_@BYTI@_@Gu@[YUi@wA[e@k@e@Y[i@cAIYYa@", "n_partners": 1, "partners": [{"id": 5597616, "name": "The Scream (Namsan Tower)", "dist": 1.144, "this2other": 100.0, "other2this": 93.6, "diff": 4.7}]}, {"segment_id": 32297898, "name": "앵봉산 (보덕사-의무경찰대)", "users": 828, "records": 1470, "distance": 2.7512, "gradient": -1.3, "polyline": "i|udFi{reWBTM`@HVHx@Rt@@TLj@@NLX`@TDNCRFPDHIV?JDNJRFVKbAIBEJONM@KLOHWDGHIN@FX?LGF?REZCFDFEJANGTCPHHJF?NJH?AFF?FFT@NRNJDL?p@ALBXVb@HDHb@`@dAJ@V^NFTZJBNNDLVLRXJ`@DFHFDXJTZTXBLV@b@NZHD?BPFNZTFHFDHZN?DDBHN@PRJDLHDFPHADFVEP@NEd@?REHGPANWRSVIHANMZEHIx@SX@JAFGb@WN?FCJOFW^c@BGJ?BMN]TUBMHKDKFi@DCNUNIN?LI\\EJHDED?FIJCBBLODMDGn@ODEF?VFJKLADBFCL?THL@b@^LCVPD@J?JF^C@AF@ZCZDHA@AJBD?FEJCVJPBRLJIZ@BDBXNPZHL?f@^FBHX?LLHDCNb@PFFFLJBTFFDTFDL\\DBPb@THNPH?JJJD^b@N@@BLLDEFAX?FAPSb@Kn@?TCXIJOFEPOFYFIb@STCDBHANHb@SZDd@GBCFQ@QAS@KXQHg@RMH?PKv@GNON@LABBDAFGLCFCF@LJ?\\PFDARPZ`@r@P", "n_partners": 1, "partners": [{"id": 19367490, "name": "앵봉산 (의무경찰대-보덕사)", "dist": 2.81, "this2other": 100.0, "other2this": 94.0, "diff": 2.1}]}, {"segment_id": 28037549, "name": "봉화산 둘레길 1바퀴_반시계방향", "users": 14, "records": 62, "distance": 4.1232, "gradient": -0.4, "polyline": "{eqdFwlufWIP@NVj@Vt@RRNCVFZKPCVRPTRCJGFOD[DCRIB?J@PPLOJSLCHFJVR`@DBN?NDL?BD?HBF\\Bn@RPXHVHJ?LO\\@NAHED_@TGFKb@GHKZEDu@NIFGXWj@CLIP]FSAi@Z[BC@AJ?b@CH@BRL?p@EJURGRIFEJKJER@TCHWJk@BQDWXIj@EFILWJ]@YG_@KaAg@OCI@KLAFQNAj@Kb@@BZLXj@TXP\\FFZJFDBDANERKR?BB@@ECLJKN?HEF?RNZ`ARRn@Xd@^f@GVLb@HRJZX@NHNBj@Hj@LHXHNJ^I\\AVFNGFAJBLJNd@NHJ@NCDMXa@PMRDHNB@NKN@DCN@LFh@CFCFKFEt@ETKJOR?TNNBNIZ[\\aANCVIXULWZKEMMQYe@DYFEL@PGf@y@DWDKDCTIRi@LUJARFVPFJH@PONIJ[X[BIFIL]FED?JLLBDFXBb@CJKL?FGC[IYAY?[GWAYISW[?UJu@Cc@EMMGEIFk@NW@G?IEMEa@I[Cc@[c@e@a@AQFc@GSOO]UEGMIOAGIUIIASLQ?a@BOCKKWKYJIHUKGGQ_@Ke@IFKEGI[KG?EEU?IGG_@Q]G[MCSMGKc@g@KIOC@KLk@@_@HKRKHKCu@MCQI[[M?W[UA_@@MCWm@EAM?ICGi@MYBMASMU?OM]Hc@FQ@SEEYMWIU@s@XEj@INIBIEQ@MXALDRE\\CDGDY?g@HCDEN?VLb@BTETMZQHO@[EUKQ?OXYLIJGBQVGBQBGHBTELCXQp@KNQIc@GWM]G", "n_partners": 3, "partners": [{"id": 9685788, "name": "[휴레] 봉화산 둘레길 한 바퀴", "dist": 4.01, "this2other": 100.0, "other2this": 100.0, "diff": 2.7}, {"id": 9759312, "name": "봉화산 한바퀴(성덕사 약수터 큰바위)", "dist": 3.662, "this2other": 90.2, "other2this": 100.0, "diff": 11.2}, {"id": 26182386, "name": "Bonghwasan Counterclockwise", "dist": 3.92, "this2other": 100.0, "other2this": 100.0, "diff": 4.9}]}, {"segment_id": 5597616, "name": "The Scream (Namsan Tower)", "users": 6174, "records": 14680, "distance": 1.144, "gradient": -10.4, "polyline": "qeedFayafWCPAfBDXNd@dA|BRZbBhBXd@P`@^XdAXr@Bx@Cr@GD?NDZPLLFd@@^Mf@ML{@b@c@\\c@z@Sj@w@fAa@t@[r@KJUHkAIc@GQ@MFUr@[b@WZeA~@MRg@dB]v@i@z@YZS^GP", "n_partners": 1, "partners": [{"id": 917413, "name": "용산동2가 산1 3 Climb", "dist": 1.09, "this2other": 93.6, "other2this": 100.0, "diff": 4.7}]}, {"segment_id": 21090737, "name": "북한산 둘레길 2코스 / Bukhansan Trail #2", "users": 1966, "records": 3503, "distance": 2.334, "gradient": 2.9, "polyline": "syxdFe~efW\\Nh@hAz@xBZZXE@INE^F`@x@j@RDb@Ih@W^Tj@Bv@Al@GRFHWzAUXCGTt@Dl@Ar@Zf@\\ZBFV^b@XVf@Gl@Uf@Cb@Hz@Lj@JHWh@Cn@PXBj@d@NCRFXGj@@n@DTNZBl@E`@JJ\\JJI^KA_@hAa@`@UZ]XSdAe@b@?^X`@J\\a@Ho@@cA`@UfAe@PCf@nANh@JPCJBLEBGHJ`AHjBLd@HDL\\DB^PRJDFLq@@o@r@cATk@Dg@HA^Pd@N`@XNAb@RZ\\Tv@A\\QNCXDJRd@|@z@j@`@HCBE@@Jx@`@|@TX\\@HB@FPDd@e@Tg@Do@QwA", "n_partners": 1, "partners": [{"id": 26692997, "name": "북한산둘레길2 (신축계단길) ", "dist": 2.22, "this2other": 96.6, "other2this": 99.4, "diff": 4.9}]}, {"segment_id": 19323852, "name": "북한산자락길 (부분 개통)", "users": 117, "records": 417, "distance": 4.0526, "gradient": -0.0, "polyline": "uandFcozeWIBAVHDFPAMEISEG?AFTVG@M?EEFTBFD@DDAJG?CBCPYIAE?@G?A@PF?z@GRGLG@EHc@JM?UMGAg@Jm@OQ@SJ[AKOEAWUa@IUF]GCIGEKAMBSUEIm@UMDKAMDI?KEQOIAMDELA^MTQJG?WHORIDGCSUQIIIQ_@GAKJQd@QTGD[DI?OK_@GSKEGICc@@UCSDGAOVG?KMWKUSOIYDYCOBs@IIKKBECASUSMSMEi@Ga@HMHIFOb@El@L`@BVIp@KLCL@XINe@Q[_@AIKAc@LUKGGEK?i@a@SQB[PI@i@MUUQMQ@STELOd@ATGZS\\GNMNc@`@e@PQBKHIVZ`A@XOd@o@z@GXCX@DNPVNb@l@N?Z\\DLLh@Eh@EHBHBp@C|@V\\v@Fj@h@l@BLAVHRBJJJBFJDRKJ@TDLBVA\\FXRZFCH?v@h@bATRJl@Fh@^P`@Hb@In@Y^IR?HT^FFRDZ`@TPTDHNL?FPBNFJt@h@LPHz@ANMb@Bt@Gh@DDVAnA\\Fb@Bf@I~@BNZXp@`@N?TFPNL@FSCU?MLUX@`@FVA^?LCP[`@I\\JFX?FNb@v@XJHx@Fn@IL?l@IBCDe@NOJCASB[J[\\c@PEZ@H@ZVF@HE`@]Xi@ZSp@WPCHFn@PPOXBPAVIHIh@?TNNFp@H?DIN|@HJQBKM]MSQOAG^LVTNF@CII?EFJHDH@DAAACY@BLDLFFCJH@AEHCKJGv@RFCF@", "n_partners": 1, "partners": [{"id": 19478921, "name": "북한산 자락길 (완전 개통)", "dist": 4.062, "this2other": 100.0, "other2this": 100.0, "diff": 0.2}]}, {"segment_id": 8882130, "name": "Aebongsan Ridge (from the south)", "users": 64, "records": 78, "distance": 3.0947, "gradient": -0.1, "polyline": "kurdFg{peWa@c@QM]c@SMOONM@WEWMQESQMEOUm@Ug@IWMQ?YJMAYGWEu@MQMKOq@IUMM?OYo@UG_@De@@k@CSBUFa@`@_@d@QPUHi@@m@PQLUBi@Ac@_@eBgAg@u@IO?OM_@QQa@WGUe@_AIIo@g@c@UOQMESAi@M_AHcACc@@m@Yg@OUMWGSAU@SHe@F_@PYXgAH}@Z[~@o@`ASf@ODQPYp@SL{@`@u@Hk@LSFm@Xc@^SJ}@NeAJSEq@s@MUc@_@e@[MQWQOQMYEWOYg@_@UWMY_@cAMQg@c@QK_AaAISMm@MW[c@IUE]?w@MSg@]e@SWCi@Dm@@o@HWAIGB[NQt@i@PMLSJY@[G[KUMw@D[IYSQ]cAg@}BEs@DYCm@JGREb@@PMn@HRELQTBNS?s@Eq@GUuB}Cg@_AK]", "n_partners": 1, "partners": [{"id": 8882136, "name": "Aebongsan Ridge (from the north)", "dist": 3.0239000000000003, "this2other": 98.1, "other2this": 100.0, "diff": 2.3}]}, {"segment_id": 32792531, "name": "서서울호수공원(CW#04)", "users": 47, "records": 304, "distance": 0.7, "gradient": 0.1, "polyline": "wl`dFs{beWBD?BEr@Mr@c@dDKHABQJABsAfAMTE~@INcA`@K@]AQSIo@@aAT}ANi@^w@HIx@mBHGHM?MNYLU^WNGj@IZFH?LHNZ", "n_partners": 2, "partners": [{"id": 21967535, "name": "서서울호수공원 호수변", "dist": 0.66, "this2other": 100.0, "other2this": 100.0, "diff": 5.7}, {"id": 32792538, "name": "서서울호수공원(CCW#01)", "dist": 0.68, "this2other": 100.0, "other2this": 100.0, "diff": 2.9}]}, {"segment_id": 8882136, "name": "Aebongsan Ridge (from the north)", "users": 38, "records": 42, "distance": 3.0239000000000003, "gradient": -0.4, "polyline": "swudFucseWn@v@FXIxBER]r@CPEFMDQEW]Y[GJMFUIK@IEEL@`A\\bBTz@Fp@HT`@`@APJ`ARl@Ar@ETKRMNiAh@MRRFj@Kh@CRET@bBj@RLPRFTHjADXb@t@X~@JLpAz@^^Zj@h@tAPPNDNJJPFT?PHTTLNNFNNPRF^XJNHTj@x@T@z@I\\?d@CJI^k@j@[r@SnAONE^UPENSFWJOb@]\\k@Z]HSHk@FO\\SRGb@Mr@IT_@JGz@MTKRCj@DrBt@tAFnA@h@Pb@@NLLPPJRDb@NNLPf@LLXd@RLDTV\\FXJRNLJR`CvBt@Mn@[PCd@HTGPKPQd@{@RKf@ERDV@jAETBPPJl@^`@JXDVXl@Hr@DXI|@BXZd@b@|@\\f@Nr@CVMThBhBFP", "n_partners": 1, "partners": [{"id": 8882130, "name": "Aebongsan Ridge (from the south)", "dist": 3.0947, "this2other": 100.0, "other2this": 98.1, "diff": 2.3}]}, {"segment_id": 14556634, "name": "안양교-광명교", "users": 5999, "records": 26640, "distance": 0.74, "gradient": -0.5, "polyline": "qrycF}qjeWh@GrAGzBWdAS`Fe@h@Ah@IdDk@vEm@vDw@tBe@", "n_partners": 1, "partners": [{"id": 14556641, "name": "광명교-안양교", "dist": 0.76, "this2other": 100.0, "other2this": 100.0, "diff": 2.6}]}, {"segment_id": 32792538, "name": "서서울호수공원(CCW#01)", "users": 1211, "records": 41870, "distance": 0.68, "gradient": -0.4, "polyline": "kl`dF{{beWWU]Mk@FEDM@OHOPi@~@IVSXWf@MNm@rASx@Gf@Gn@DjA@HCLLHj@?FEVC^SBEFYFo@HSTQB?FGTIPOPIBEB?NMFa@Ba@PcAFs@He@Bm@A]", "n_partners": 2, "partners": [{"id": 21967535, "name": "서서울호수공원 호수변", "dist": 0.66, "this2other": 100.0, "other2this": 100.0, "diff": 2.9}, {"id": 32792531, "name": "서서울호수공원(CW#04)", "dist": 0.7, "this2other": 100.0, "other2this": 100.0, "diff": 2.9}]}, {"segment_id": 10688477, "name": "상도교 → 장암대교 (중랑천 서쪽)", "users": 2359, "records": 23819, "distance": 1.28, "gradient": 0.1, "polyline": "{q_eFgsmfWgAr@m@XaAv@SHk@`@mA|@i@NWBeCDcADcCBi@Fc@Cm@M{A@]Bc@HKDwAbAoAVwC~@wARw@B}AN]Fy@Dq@@QBGA?IECIAq@Fg@Nk@Z]NoAR}@TgB?OB", "n_partners": 1, "partners": [{"id": 9158674, "name": "장암대교 -> 상도교 (중랑천 서쪽)", "dist": 1.25, "this2other": 100.0, "other2this": 100.0, "diff": 2.3}]}, {"segment_id": 14556641, "name": "광명교-안양교", "users": 7052, "records": 26847, "distance": 0.76, "gradient": 0.4, "polyline": "uixcF_{jeWg@Dg@JgFjA_Dd@aDn@oANoAFiCVcBTkAV{CVoAN", "n_partners": 1, "partners": [{"id": 14556634, "name": "안양교-광명교", "dist": 0.74, "this2other": 100.0, "other2this": 100.0, "diff": 2.6}]}, {"segment_id": 24298469, "name": "중랑천 뚝방길 (중랑교 방향)", "users": 467, "records": 3652, "distance": 1.2, "gradient": 0.3, "polyline": "_dkdFu~rfWy@f@}AfAaAv@]Za@XqAhAa@VuAfAc@XkDtCm@b@_@Zc@VkAvAiAl@qAbAcAn@qCdCu@~@]\\_@Xa@Ta@NiCl@g@Be@HmAHiAX{@N", "n_partners": 1, "partners": [{"id": 24298355, "name": "중랑천 뚝방길 (장안교 방향)", "dist": 1.23, "this2other": 100.0, "other2this": 96.9, "diff": 2.4}]}, {"segment_id": 40581609, "name": "창동교_상계교 서편 by psw", "users": 2191, "records": 10487, "distance": 1.09, "gradient": 0.0, "polyline": "m_ydFmdnfWmAIm@JoA@}@AWCeC?UFaAN_AR}ARw@DIAGJWRk@Re@J[LQNy@d@oA~@a@Nc@TmAf@mCv@qB|@gAx@sAd@e@JeCFs@?c@AGK", "n_partners": 1, "partners": [{"id": 40667936, "name": "상계교_창동교 서편 by psw", "dist": 1.03, "this2other": 97.0, "other2this": 100.0, "diff": 5.5}]}, {"segment_id": 1237484, "name": "Seoul Korea Park Run", "users": 917, "records": 7150, "distance": 1.992, "gradient": 0.0, "polyline": "uk}cFgnmfWZg@nAgA^a@b@[dAiAT]p@i@b@q@zBiCf@s@Z[ZQr@m@LSb@Oh@F\\NP`@Rz@Lb@VbA`@rABRBz@BpEC`BEpAMrBCHQpEa@fEMd@mAtBkBjEeAvAmA`ASHYOs@oAq@qBa@{AKk@m@oB[]MUMcAEm@Ik@Uo@Ku@M[a@{BCaAIk@Mm@Ww@", "n_partners": 2, "partners": [{"id": 11272585, "name": "Seonjeongneung Park counterclockwise", "dist": 2.04, "this2other": 100.0, "other2this": 100.0, "diff": 2.4}, {"id": 20377755, "name": "Seonjeongneung CW", "dist": 1.98, "this2other": 96.5, "other2this": 100.0, "diff": 0.6}]}];
+
+// ── Encoded Polyline 디코딩 ───────────────────────────────
+function decodePolyline(enc) {
+  const pts = []; let i=0, lat=0, lng=0;
+  while(i < enc.length) {
+    let b, shift=0, result=0;
+    do { b=enc.charCodeAt(i++)-63; result|=(b&0x1f)<<shift; shift+=5; } while(b>=0x20);
+    lat += (result&1) ? ~(result>>1) : result>>1;
+    shift=0; result=0;
+    do { b=enc.charCodeAt(i++)-63; result|=(b&0x1f)<<shift; shift+=5; } while(b>=0x20);
+    lng += (result&1) ? ~(result>>1) : result>>1;
+    pts.push([lat/1e5, lng/1e5]);
+  }
+  return pts;
+}
+
+function getColor(n) {
+  if(n >= 3) return '#e74c3c';
+  if(n === 2) return '#e67e22';
+  return '#3498db';
+}
+function getWeight(n) { return n >= 3 ? 4 : 3; }
+
+// ── 지도 초기화 ──────────────────────────────────────────
+const map = L.map('map').setView([37.5665, 126.9780], 12);
+L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+  attribution:'&copy; OpenStreetMap &copy; CARTO', subdomains:'abcd', maxZoom:19
+}).addTo(map);
+
+// segment_id → polyline 레이어 매핑
+const polylineMap = {};
+let selectedId = null;
+let partnerLayers = [];
+
+// 모든 세그먼트 그리기
+SEGMENTS.forEach(seg => {
+  if(!seg.polyline) return;
+  const pts = decodePolyline(seg.polyline);
+  if(!pts.length) return;
+  const color = getColor(seg.n_partners);
+  const weight = getWeight(seg.n_partners);
+
+  const pl = L.polyline(pts, {color, weight, opacity:0.75, smoothFactor:1}).addTo(map);
+  pl._segId = seg.segment_id;
+
+  pl.on('mouseover', function() {
+    if(selectedId !== seg.segment_id)
+      this.setStyle({weight: weight+2, opacity:1});
+    this.bindTooltip(
+      `<b>${seg.name}</b><br>중복: ${seg.n_partners}개 경로 / 이용자: ${seg.users.toLocaleString()}명`,
+      {sticky:true}
+    ).openTooltip();
+  });
+  pl.on('mouseout', function() {
+    if(selectedId !== seg.segment_id)
+      this.setStyle({weight, opacity:0.75});
+    this.closeTooltip();
+  });
+  pl.on('click', () => selectSegment(seg.segment_id));
+  polylineMap[seg.segment_id] = {pl, pts, color, weight, seg};
+});
+
+// ── 세그먼트 선택 ────────────────────────────────────────
+function clearSelection() {
+  if(selectedId !== null) {
+    const prev = polylineMap[selectedId];
+    if(prev) prev.pl.setStyle({color:prev.color, weight:prev.weight, opacity:0.75});
+  }
+  partnerLayers.forEach(l => map.removeLayer(l));
+  partnerLayers = [];
+  selectedId = null;
+}
+
+function selectSegment(sid, fromSearch) {
+  clearSelection();
+  const entry = polylineMap[sid];
+  if(!entry) return;
+  selectedId = sid;
+
+  // 선택 경로 하이라이트
+  entry.pl.setStyle({color:'#fc4c02', weight:6, opacity:1});
+  entry.pl.bringToFront();
+  if(fromSearch) map.fitBounds(entry.pl.getBounds(), {padding:[60,60]});
+
+  // 파트너 경로 점선 오버레이
+  entry.seg.partners.forEach(p => {
+    const pEntry = polylineMap[p.id];
+    if(pEntry) {
+      const dashed = L.polyline(pEntry.pts, {
+        color:'#f39c12', weight:4, opacity:0.9,
+        dashArray:'8 6'
+      }).addTo(map);
+      dashed.bringToFront();
+      partnerLayers.push(dashed);
+    }
+  });
+  entry.pl.bringToFront();
+
+  // 상세 패널
+  showDetail(entry.seg);
+
+  // 검색 결과 active
+  document.querySelectorAll('.result-item').forEach(el => {
+    el.classList.toggle('active', parseInt(el.dataset.id) === sid);
+  });
+}
+
+function showDetail(seg) {
+  document.getElementById('detail-title').textContent   = seg.name;
+  document.getElementById('detail-id').textContent      = `Segment ID: ${seg.segment_id}`;
+  document.getElementById('s-users').textContent        = seg.users.toLocaleString();
+  document.getElementById('s-records').textContent      = seg.records.toLocaleString();
+  document.getElementById('s-dist').textContent         = seg.distance.toFixed(3);
+  document.getElementById('s-grad').textContent         = seg.gradient.toFixed(1) + '%';
+  document.getElementById('overlap-title').textContent  =
+    `중복 경로 (${seg.n_partners}개)`;
+
+  const list = document.getElementById('partner-list');
+  list.innerHTML = '';
+  const selName = seg.name.length > 14 ? seg.name.slice(0,14)+'…' : seg.name;
+
+  seg.partners.forEach(p => {
+    const pShort = p.name.length > 14 ? p.name.slice(0,14)+'…' : p.name;
+
+    function barClass(v) { return v>=90?'high':v>=70?'mid':'low'; }
+
+    const card = document.createElement('div');
+    card.className = 'partner-card';
+    card.innerHTML = `
+      <div class="p-name" title="${p.name}">${p.name}</div>
+      <div class="p-meta">${p.dist.toFixed(3)}km &nbsp;·&nbsp; ID: ${p.id}</div>
+      <div class="bar-section">
+        <div class="bar-row">
+          <div class="bar-label-row">
+            <span class="bar-lbl" title="${seg.name}">"${selName}" 중 겹치는 구간</span>
+            <span class="bar-pct">${p.this2other.toFixed(1)}%</span>
+          </div>
+          <div class="bar-track">
+            <div class="bar-fill ${barClass(p.this2other)}" style="width:${p.this2other}%"></div>
+          </div>
+        </div>
+        <div class="bar-row">
+          <div class="bar-label-row">
+            <span class="bar-lbl" title="${p.name}">"${pShort}" 중 겹치는 구간</span>
+            <span class="bar-pct">${p.other2this.toFixed(1)}%</span>
+          </div>
+          <div class="bar-track">
+            <div class="bar-fill ${barClass(p.other2this)}" style="width:${p.other2this}%"></div>
+          </div>
+        </div>
+        <div class="diff-row">거리 차이 ${p.diff.toFixed(1)}%</div>
+      </div>`;
+    card.addEventListener('click', () => {
+      selectSegment(p.id, true);
+    });
+    list.appendChild(card);
+  });
+
+  document.getElementById('detail-panel').classList.add('visible');
+}
+
+// ── 닫기 ────────────────────────────────────────────────
+document.getElementById('detail-close').addEventListener('click', () => {
+  clearSelection();
+  document.getElementById('detail-panel').classList.remove('visible');
+  document.querySelectorAll('.result-item').forEach(el => el.classList.remove('active'));
+});
+
+// ── 검색 ────────────────────────────────────────────────
+const searchInput   = document.getElementById('search-input');
+const searchResults = document.getElementById('search-results');
+const resultCount   = document.getElementById('result-count');
+
+function renderResults(filtered) {
+  searchResults.innerHTML = '';
+  if(!filtered.length) { resultCount.textContent='결과 없음'; return; }
+  resultCount.textContent = `${filtered.length}개 세그먼트`;
+  filtered.slice(0,100).forEach(seg => {
+    const div = document.createElement('div');
+    div.className = 'result-item';
+    div.dataset.id = seg.segment_id;
+    div.innerHTML = `
+      <div class="seg-name">${seg.name}</div>
+      <div class="seg-meta">
+        ID: ${seg.segment_id} &nbsp;·&nbsp; ${seg.distance.toFixed(2)}km
+        &nbsp;·&nbsp; 중복 ${seg.n_partners}개
+        &nbsp;·&nbsp; ${seg.users.toLocaleString()}명
+      </div>`;
+    div.addEventListener('click', () => selectSegment(seg.segment_id, true));
+    searchResults.appendChild(div);
+  });
+}
+
+searchInput.addEventListener('input', () => {
+  const q = searchInput.value.trim().toLowerCase();
+  if(!q) { resultCount.textContent=''; searchResults.innerHTML=''; return; }
+  const filtered = SEGMENTS
+    .filter(s => s.name.toLowerCase().includes(q) || String(s.segment_id).includes(q))
+    .sort((a,b) => b.users - a.users);
+  renderResults(filtered);
+});
+</script>
+</body>
+</html>
