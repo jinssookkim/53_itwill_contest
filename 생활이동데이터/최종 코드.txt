@@ -1,0 +1,688 @@
+# =========================================================
+# 0. 라이브러리
+# =========================================================
+
+import os
+import glob
+import gc
+import numpy as np
+import pandas as pd
+
+# =========================================================
+# 1. 기본 설정
+# =========================================================
+
+# 실제 5월 일별 CSV 파일들이 들어 있는 폴더
+# 파일명까지 쓰지 말고 폴더명만 입력
+REAL_DATA_DIR = r"E:\B078_202405"
+
+# 처리할 월
+TARGET_MONTH = "202405"
+
+# 결과 저장 폴더
+OUTPUT_DIR = "./output_B078"
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+# 한 번에 읽을 행 수
+CHUNKSIZE = 300_000
+
+# 반출용 소규모 OD 제거 기준
+EXPORT_MIN_COUNT = 5
+
+# 파일명 패턴
+# 폴더 안의 csv를 모두 읽음
+FILE_PATTERN = "*.csv"
+
+# =========================================================
+# 2. 공통 함수
+# =========================================================
+
+def detect_encoding(file_path):
+    """
+    CSV 인코딩 자동 확인.
+    """
+    encodings = ["utf-8-sig", "utf-8", "cp949", "euc-kr"]
+    
+    for enc in encodings:
+        try:
+            pd.read_csv(file_path, nrows=5, encoding=enc)
+            return enc
+        except UnicodeDecodeError:
+            continue
+        except Exception:
+            continue
+    
+    raise ValueError(f"인코딩을 확인할 수 없습니다: {file_path}")
+
+
+def detect_sep(file_path, encoding):
+    """
+    CSV 구분자 자동 확인.
+    쉼표, 파이프, 탭 중 컬럼이 가장 많이 나뉘는 구분자를 선택.
+    """
+    seps = [",", "|", "\t"]
+    best_sep = ","
+    best_col_count = 0
+    
+    for sep in seps:
+        try:
+            temp = pd.read_csv(
+                file_path,
+                encoding=encoding,
+                sep=sep,
+                nrows=5
+            )
+            col_count = len(temp.columns)
+            
+            if col_count > best_col_count:
+                best_col_count = col_count
+                best_sep = sep
+        except Exception:
+            continue
+    
+    return best_sep
+
+
+def clean_and_standardize_columns(cols):
+    """
+    컬럼명을 표준화.
+    
+    예:
+    o_cell_id   → O_CELL_ID
+    O_CELL_ID   → O_CELL_ID
+    total_cnt   → TOTAL_CNT
+    """
+    new_cols = []
+    
+    for c in cols:
+        c = str(c).strip().strip("'").strip('"')
+        c = c.upper()
+        new_cols.append(c)
+    
+    return new_cols
+
+
+def get_columns(file_path, encoding, sep):
+    """
+    컬럼명만 읽어서 대문자로 표준화.
+    """
+    cols = pd.read_csv(
+        file_path,
+        encoding=encoding,
+        sep=sep,
+        nrows=0
+    ).columns.tolist()
+    
+    return clean_and_standardize_columns(cols)
+
+# =========================================================
+# 3. 시간대 변환 함수
+# =========================================================
+
+def make_time_bin(series):
+    """
+    시간 코드를 4개 시간대로 변환.
+    
+    05_08 : 05, 06, 07
+    08_18 : 08 ~ 17
+    18_22 : 18 ~ 21
+    22_05 : 22, 23, 00, 01, 02, 03, 04
+    """
+    
+    t = pd.to_numeric(series, errors="coerce")
+    
+    conditions = [
+        (t >= 5) & (t < 8),
+        (t >= 8) & (t < 18),
+        (t >= 18) & (t < 22),
+        (t >= 22) | (t < 5)
+    ]
+    
+    choices = ["05_08", "08_18", "18_22", "22_05"]
+    
+    return np.select(conditions, choices, default="unknown")
+
+# =========================================================
+# 4. 필수 컬럼 확인 함수
+# =========================================================
+
+def check_required_columns(columns):
+    """
+    실제 데이터에 필요한 컬럼이 있는지 확인.
+    실제 파일 컬럼명이 소문자여도 이미 대문자로 표준화되어 들어옴.
+    """
+    
+    required_cols = [
+        "O_CELL_ID",
+        "O_CELL_X",
+        "O_CELL_Y",
+        "D_CELL_ID",
+        "D_CELL_X",
+        "D_CELL_Y",
+        "ST_TIME_CD",
+        "FNS_TIME_CD"
+    ]
+    
+    missing_cols = [c for c in required_cols if c not in columns]
+    
+    if missing_cols:
+        raise ValueError(
+            f"필수 컬럼이 없습니다: {missing_cols}\n"
+            f"현재 파일 컬럼명: {columns}"
+        )
+    
+    return required_cols
+
+
+def find_count_columns(columns):
+    """
+    실제 데이터에 TOTAL_CNT가 있으면 TOTAL_CNT 사용.
+    샘플 데이터처럼 TOTAL_CNT가 없으면 MALE_00_CNT ~ FEML_85_CNT 합산.
+    """
+    
+    if "TOTAL_CNT" in columns:
+        return "total", ["TOTAL_CNT"]
+    
+    age_gender_cols = [
+        col for col in columns
+        if (
+            (col.startswith("MALE_") or col.startswith("FEML_") or col.startswith("FEMALE_"))
+            and col.endswith("_CNT")
+        )
+    ]
+    
+    if len(age_gender_cols) == 0:
+        raise ValueError(
+            "이용자수 컬럼을 찾지 못했습니다. "
+            "TOTAL_CNT 또는 MALE/FEML 연령별 CNT 컬럼이 필요합니다."
+        )
+    
+    return "age_gender", age_gender_cols
+
+# =========================================================
+# 5. 파일 1개 처리 함수
+# =========================================================
+
+def process_one_file(file_path, target_month, chunksize=300_000):
+    """
+    파일 1개를 OD + 출발시간대 + 도착시간대 기준으로 집계.
+    
+    최종 결과 컬럼:
+    month
+    O_CELL_ID, O_CELL_X, O_CELL_Y
+    D_CELL_ID, D_CELL_X, D_CELL_Y
+    st_time_bin
+    fns_time_bin
+    total_cnt_sum
+    
+    날짜 컬럼 ETL_YMD가 있으면 그걸로 month 생성.
+    날짜 컬럼이 없으면 target_month를 그대로 입력.
+    """
+    
+    print("\n" + "=" * 80)
+    print(f"처리 시작: {file_path}")
+    
+    encoding = detect_encoding(file_path)
+    sep = detect_sep(file_path, encoding)
+    
+    print("인코딩:", encoding)
+    print("구분자:", repr(sep))
+    
+    # 원본 컬럼 확인
+    original_cols = pd.read_csv(
+        file_path,
+        encoding=encoding,
+        sep=sep,
+        nrows=0
+    ).columns.tolist()
+    
+    # 표준화된 컬럼명
+    standard_cols = clean_and_standardize_columns(original_cols)
+    
+    print("원본 컬럼 예시:", original_cols[:20])
+    print("표준화 컬럼 예시:", standard_cols[:20])
+    
+    # 원본 컬럼명 → 표준 컬럼명 매핑
+    rename_map = dict(zip(original_cols, standard_cols))
+    
+    # 필수 컬럼 확인
+    base_cols = check_required_columns(standard_cols)
+    
+    # 이용자수 컬럼 확인
+    count_mode, count_cols = find_count_columns(standard_cols)
+    
+    print("이용자수 처리 방식:", count_mode)
+    print("이용자수 컬럼:", count_cols[:10])
+    
+    # 날짜 컬럼이 있으면 같이 읽기
+    if "ETL_YMD" in standard_cols:
+        read_standard_cols = ["ETL_YMD"] + base_cols + count_cols
+    else:
+        read_standard_cols = base_cols + count_cols
+    
+    # read_csv의 usecols는 원본 컬럼명으로 넣어야 함
+    standard_to_original = dict(zip(standard_cols, original_cols))
+    usecols = [standard_to_original[c] for c in read_standard_cols]
+    usecols = list(dict.fromkeys(usecols))
+    
+    print("실제로 읽을 원본 컬럼:")
+    print(usecols)
+    
+    partial_results = []
+    original_total_sum = 0
+    
+    reader = pd.read_csv(
+        file_path,
+        encoding=encoding,
+        sep=sep,
+        usecols=usecols,
+        chunksize=chunksize,
+        low_memory=False
+    )
+    
+    for i, chunk in enumerate(reader, start=1):
+        print(f"  chunk {i} 처리 중... 행 수: {len(chunk):,}")
+        
+        # 컬럼명 표준화
+        chunk = chunk.rename(columns=rename_map)
+        
+        # month 생성
+        if "ETL_YMD" in chunk.columns:
+            chunk["ETL_YMD"] = chunk["ETL_YMD"].astype(str)
+            chunk["month"] = chunk["ETL_YMD"].str[:6]
+            chunk = chunk[chunk["month"] == str(target_month)].copy()
+        else:
+            chunk["month"] = str(target_month)
+        
+        if len(chunk) == 0:
+            continue
+        
+        # 시간대 생성
+        chunk["st_time_bin"] = make_time_bin(chunk["ST_TIME_CD"])
+        chunk["fns_time_bin"] = make_time_bin(chunk["FNS_TIME_CD"])
+        
+        # 비정상 시간 제거
+        chunk = chunk[
+            (chunk["st_time_bin"] != "unknown") &
+            (chunk["fns_time_bin"] != "unknown")
+        ].copy()
+        
+        if len(chunk) == 0:
+            continue
+        
+        # 이용자수 생성
+        if count_mode == "total":
+            chunk["total_cnt"] = pd.to_numeric(
+                chunk["TOTAL_CNT"],
+                errors="coerce"
+            ).fillna(0)
+        else:
+            for col in count_cols:
+                chunk[col] = pd.to_numeric(chunk[col], errors="coerce").fillna(0)
+            chunk["total_cnt"] = chunk[count_cols].sum(axis=1)
+        
+        original_total_sum += chunk["total_cnt"].sum()
+        
+        keep_cols = [
+            "month",
+            "O_CELL_ID", "O_CELL_X", "O_CELL_Y",
+            "D_CELL_ID", "D_CELL_X", "D_CELL_Y",
+            "st_time_bin",
+            "fns_time_bin",
+            "total_cnt"
+        ]
+        
+        chunk = chunk[keep_cols]
+        
+        grouped = (
+            chunk
+            .groupby(
+                [
+                    "month",
+                    "O_CELL_ID", "O_CELL_X", "O_CELL_Y",
+                    "D_CELL_ID", "D_CELL_X", "D_CELL_Y",
+                    "st_time_bin",
+                    "fns_time_bin"
+                ],
+                as_index=False
+            )["total_cnt"]
+            .sum()
+            .rename(columns={"total_cnt": "total_cnt_sum"})
+        )
+        
+        partial_results.append(grouped)
+        
+        del chunk, grouped
+        gc.collect()
+        
+        # 메모리 절약용 중간 병합
+        if len(partial_results) >= 10:
+            partial_results = [
+                pd.concat(partial_results, ignore_index=True)
+                .groupby(
+                    [
+                        "month",
+                        "O_CELL_ID", "O_CELL_X", "O_CELL_Y",
+                        "D_CELL_ID", "D_CELL_X", "D_CELL_Y",
+                        "st_time_bin",
+                        "fns_time_bin"
+                    ],
+                    as_index=False
+                )["total_cnt_sum"]
+                .sum()
+            ]
+            gc.collect()
+    
+    if len(partial_results) == 0:
+        print("처리된 데이터가 없습니다.")
+        return pd.DataFrame()
+    
+    result = (
+        pd.concat(partial_results, ignore_index=True)
+        .groupby(
+            [
+                "month",
+                "O_CELL_ID", "O_CELL_X", "O_CELL_Y",
+                "D_CELL_ID", "D_CELL_X", "D_CELL_Y",
+                "st_time_bin",
+                "fns_time_bin"
+            ],
+            as_index=False
+        )["total_cnt_sum"]
+        .sum()
+    )
+    
+    print("\n파일 처리 완료")
+    print("파일 내 OD 집계 행 수:", len(result))
+    print("파일 내 원본 이용자수 합계:", original_total_sum)
+    print("파일 내 집계 이용자수 합계:", result["total_cnt_sum"].sum())
+    
+    return result
+
+# =========================================================
+# 6. 여러 일별 파일 → 월별 OD 집계
+# =========================================================
+
+def process_month_files(file_list, target_month, chunksize=300_000):
+    """
+    일별 파일을 각각 집계한 뒤,
+    다시 합쳐서 월별 OD 집계 파일 생성.
+    """
+    
+    monthly_results = []
+    
+    for idx, file_path in enumerate(file_list, start=1):
+        print("\n" + "#" * 80)
+        print(f"[{idx}/{len(file_list)}] 파일 처리")
+        
+        daily_result = process_one_file(
+            file_path=file_path,
+            target_month=target_month,
+            chunksize=chunksize
+        )
+        
+        if len(daily_result) > 0:
+            monthly_results.append(daily_result)
+        
+        # 5개 일별 결과가 쌓이면 중간 병합
+        if len(monthly_results) >= 5:
+            monthly_results = [
+                pd.concat(monthly_results, ignore_index=True)
+                .groupby(
+                    [
+                        "month",
+                        "O_CELL_ID", "O_CELL_X", "O_CELL_Y",
+                        "D_CELL_ID", "D_CELL_X", "D_CELL_Y",
+                        "st_time_bin",
+                        "fns_time_bin"
+                    ],
+                    as_index=False
+                )["total_cnt_sum"]
+                .sum()
+            ]
+            gc.collect()
+    
+    if len(monthly_results) == 0:
+        raise ValueError("처리된 파일이 없습니다.")
+    
+    monthly_od = (
+        pd.concat(monthly_results, ignore_index=True)
+        .groupby(
+            [
+                "month",
+                "O_CELL_ID", "O_CELL_X", "O_CELL_Y",
+                "D_CELL_ID", "D_CELL_X", "D_CELL_Y",
+                "st_time_bin",
+                "fns_time_bin"
+            ],
+            as_index=False
+        )["total_cnt_sum"]
+        .sum()
+    )
+    
+    print("\n" + "=" * 80)
+    print("월별 OD 최종 집계 완료")
+    print("최종 행 수:", len(monthly_od))
+    print("최종 이용자수 합계:", monthly_od["total_cnt_sum"].sum())
+    
+    return monthly_od
+
+# =========================================================
+# 7. 출발 기준 / 도착 기준 집계
+# =========================================================
+
+def make_origin_summary(monthly_od):
+    """
+    출발 기준:
+    출발 격자 + 출발 시간대 기준 이용자수 합계
+    """
+    
+    origin_summary = (
+        monthly_od
+        .groupby(
+            [
+                "month",
+                "O_CELL_ID", "O_CELL_X", "O_CELL_Y",
+                "st_time_bin"
+            ],
+            as_index=False
+        )["total_cnt_sum"]
+        .sum()
+        .rename(columns={
+            "O_CELL_ID": "CELL_ID",
+            "O_CELL_X": "CELL_X",
+            "O_CELL_Y": "CELL_Y",
+            "st_time_bin": "time_bin",
+            "total_cnt_sum": "origin_total_cnt_sum"
+        })
+    )
+    
+    return origin_summary
+
+
+def make_destination_summary(monthly_od):
+    """
+    도착 기준:
+    도착 격자 + 도착 시간대 기준 이용자수 합계
+    """
+    
+    destination_summary = (
+        monthly_od
+        .groupby(
+            [
+                "month",
+                "D_CELL_ID", "D_CELL_X", "D_CELL_Y",
+                "fns_time_bin"
+            ],
+            as_index=False
+        )["total_cnt_sum"]
+        .sum()
+        .rename(columns={
+            "D_CELL_ID": "CELL_ID",
+            "D_CELL_X": "CELL_X",
+            "D_CELL_Y": "CELL_Y",
+            "fns_time_bin": "time_bin",
+            "total_cnt_sum": "destination_total_cnt_sum"
+        })
+    )
+    
+    return destination_summary
+
+# =========================================================
+# 8. 저장 함수
+# =========================================================
+
+def save_outputs(monthly_od, target_month, output_dir, export_min_count=5):
+    """
+    저장 파일:
+    1. OD 전체 파일
+    2. OD 소규모 제거 파일
+    3. 출발 기준 집계 파일
+    4. 도착 기준 집계 파일
+    """
+    
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # 1. OD 전체 파일
+    od_full_path = os.path.join(
+        output_dir,
+        f"B078_{target_month}_OD_monthly_FULL_INTERNAL.csv"
+    )
+    
+    monthly_od.to_csv(
+        od_full_path,
+        index=False,
+        encoding="utf-8-sig"
+    )
+    
+    # 2. OD 소규모 제거 파일
+    monthly_od_gt5 = monthly_od[
+        monthly_od["total_cnt_sum"] > export_min_count
+    ].copy()
+    
+    od_gt5_path = os.path.join(
+        output_dir,
+        f"B078_{target_month}_OD_monthly_EXPORT_GT5.csv"
+    )
+    
+    monthly_od_gt5.to_csv(
+        od_gt5_path,
+        index=False,
+        encoding="utf-8-sig"
+    )
+    
+    # 3. 출발 기준 파일
+    origin_summary = make_origin_summary(monthly_od)
+    
+    origin_path = os.path.join(
+        output_dir,
+        f"B078_{target_month}_origin_timebin_monthly_sum.csv"
+    )
+    
+    origin_summary.to_csv(
+        origin_path,
+        index=False,
+        encoding="utf-8-sig"
+    )
+    
+    # 4. 도착 기준 파일
+    destination_summary = make_destination_summary(monthly_od)
+    
+    destination_path = os.path.join(
+        output_dir,
+        f"B078_{target_month}_destination_timebin_monthly_sum.csv"
+    )
+    
+    destination_summary.to_csv(
+        destination_path,
+        index=False,
+        encoding="utf-8-sig"
+    )
+    
+    print("\n" + "=" * 80)
+    print("저장 완료")
+    print("OD 전체 파일:", od_full_path)
+    print("OD 소규모 제거 파일:", od_gt5_path)
+    print("출발 기준 파일:", origin_path)
+    print("도착 기준 파일:", destination_path)
+    
+    print("\nOD 전체 행 수:", len(monthly_od))
+    print("OD 전체 이용자수 합계:", monthly_od["total_cnt_sum"].sum())
+    
+    print("\nOD 소규모 제거 행 수:", len(monthly_od_gt5))
+    print("OD 소규모 제거 이용자수 합계:", monthly_od_gt5["total_cnt_sum"].sum())
+    
+    print("\n출발 기준 행 수:", len(origin_summary))
+    print("출발 기준 이용자수 합계:", origin_summary["origin_total_cnt_sum"].sum())
+    
+    print("\n도착 기준 행 수:", len(destination_summary))
+    print("도착 기준 이용자수 합계:", destination_summary["destination_total_cnt_sum"].sum())
+    
+    return {
+        "od_full": od_full_path,
+        "od_gt5": od_gt5_path,
+        "origin": origin_path,
+        "destination": destination_path
+    }
+
+# =========================================================
+# 9. 실제 파일 목록 확인
+# =========================================================
+
+file_list = sorted(
+    glob.glob(
+        os.path.join(REAL_DATA_DIR, FILE_PATTERN)
+    )
+)
+
+print("찾은 CSV 파일 수:", len(file_list))
+
+print("\n앞 10개 파일:")
+for f in file_list[:10]:
+    print(f)
+
+if len(file_list) == 0:
+    raise ValueError("CSV 파일을 찾지 못했습니다. REAL_DATA_DIR 경로를 확인하세요.")
+
+# =========================================================
+# 10. 월별 OD 집계 실행
+# =========================================================
+
+monthly_od = process_month_files(
+    file_list=file_list,
+    target_month=TARGET_MONTH,
+    chunksize=CHUNKSIZE
+)
+
+display(monthly_od.head())
+
+print("월별 OD 집계 크기:", monthly_od.shape)
+print("월별 OD 이용자수 합계:", monthly_od["total_cnt_sum"].sum())
+
+# =========================================================
+# 11. 결과 저장
+# =========================================================
+
+saved_paths = save_outputs(
+    monthly_od=monthly_od,
+    target_month=TARGET_MONTH,
+    output_dir=OUTPUT_DIR,
+    export_min_count=EXPORT_MIN_COUNT
+)
+
+saved_paths
+
+# =========================================================
+# 12. 최종 테이블 형태 확인
+# =========================================================
+
+print("OD 월별 집계 파일")
+display(monthly_od.head())
+
+origin_summary = make_origin_summary(monthly_od)
+print("출발 기준 집계 파일")
+display(origin_summary.head())
+
+destination_summary = make_destination_summary(monthly_od)
+print("도착 기준 집계 파일")
+display(destination_summary.head())
